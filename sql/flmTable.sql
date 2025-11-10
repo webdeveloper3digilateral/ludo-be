@@ -1,0 +1,21 @@
+CREATE TABLE `flms` (
+  `id` varchar(36) NOT NULL DEFAULT (uuid()),
+  `flmId` varchar(255) NOT NULL,
+  `flmName` varchar(255) DEFAULT NULL,
+  `password` varchar(255) DEFAULT NULL,
+  `hq` varchar(255) DEFAULT NULL,
+  `zone` varchar(255) DEFAULT NULL,
+  `kills` int DEFAULT NULL,
+  `points` int DEFAULT '0',
+  `moves` int DEFAULT NULL,
+  `currentBalanceMoves` int DEFAULT NULL,
+  `status` varchar(255) DEFAULT 'Active',
+  `createdAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `slmId` varchar(255) DEFAULT NULL,
+  `region` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `flmId` (`flmId`),
+  KEY `fk_flm_slm` (`slmId`),
+  CONSTRAINT `fk_flm_slm` FOREIGN KEY (`slmId`) REFERENCES `slms` (`slmId`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

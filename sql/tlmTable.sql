@@ -1,0 +1,17 @@
+CREATE TABLE `tlms` (
+  `id` varchar(36) NOT NULL DEFAULT (uuid()),
+  `tlmId` varchar(255) NOT NULL,
+  `tlmName` varchar(255) DEFAULT NULL,
+  `password` varchar(255) DEFAULT NULL,
+  `hq` varchar(255) DEFAULT NULL,
+  `zone` varchar(255) DEFAULT NULL,
+  `status` varchar(255) DEFAULT 'Active',
+  `createdAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `adminId` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `tlmId` (`tlmId`),
+  KEY `idx_createdAt` (`createdAt`),
+  KEY `fk_tlm_admin` (`adminId`),
+  CONSTRAINT `fk_tlm_admin` FOREIGN KEY (`adminId`) REFERENCES `admins` (`adminId`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

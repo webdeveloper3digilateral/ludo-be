@@ -1,0 +1,18 @@
+CREATE TABLE `slms` (
+  `id` varchar(36) NOT NULL DEFAULT (uuid()),
+  `slmId` varchar(255) NOT NULL,
+  `slmName` varchar(255) DEFAULT NULL,
+  `password` varchar(255) DEFAULT NULL,
+  `hq` varchar(255) DEFAULT NULL,
+  `zone` varchar(255) DEFAULT NULL,
+  `status` varchar(255) DEFAULT 'Active',
+  `createdAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `tlmId` varchar(255) DEFAULT NULL,
+  `region` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `slmId` (`slmId`),
+  KEY `idx_createdAt` (`createdAt`),
+  KEY `fk_slm_tlm` (`tlmId`),
+  CONSTRAINT `fk_slm_tlm` FOREIGN KEY (`tlmId`) REFERENCES `tlms` (`tlmId`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

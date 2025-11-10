@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ludo Socket.IO Test Client</title>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 30px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .connection-panel {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: background 0.3s;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+
+        button:hover {
+            background: #5568d3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .events-panel {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .panel {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .panel h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .event-item {
+            background: white;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 4px solid #667eea;
+            font-size: 13px;
+        }
+
+        .event-item.success {
+            border-left-color: #28a745;
+        }
+
+        .event-item.error {
+            border-left-color: #dc3545;
+        }
+
+        .event-item.warning {
+            border-left-color: #ffc107;
+        }
+
+        .event-time {
+            color: #666;
+            font-size: 11px;
+            margin-top: 5px;
+        }
+
+        .pawns-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .pawn-card {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 2px solid #ddd;
+        }
+
+        .pawn-card h3 {
+            font-size: 14px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .pawn-info {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .pawn-info strong {
+            color: #333;
+        }
+
+        .color-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 5px;
+        }
+
+        .color-red { background: #dc3545; }
+        .color-blue { background: #007bff; }
+        .color-green { background: #28a745; }
+        .color-yellow { background: #ffc107; color: #333; }
+
+        .clear-btn {
+            background: #dc3545;
+            margin-top: 10px;
+        }
+
+        .clear-btn:hover {
+            background: #c82333;
+        }
+
+        @media (max-width: 768px) {
+            .events-panel {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Ludo Socket.IO Test Client</h1>
+
+        <div class="connection-panel">
+            <div class="form-group">
+                <label>Backend URL:</label>
+                <input type="text" id="backendUrl" value="http://localhost:4500" placeholder="http://localhost:4500">
+            </div>
+            <div class="form-group">
+                <label>Board ID:</label>
+                <input type="text" id="boardId" placeholder="Enter board ID">
+            </div>
+            <div class="form-group">
+                <label>Player ID:</label>
+                <input type="text" id="playerId" placeholder="Enter player ID">
+            </div>
+            <div id="status" class="status disconnected">🔴 Disconnected</div>
+            <button id="connectBtn" onclick="connectSocket()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnectSocket()" disabled>Disconnect</button>
+            <button id="joinBoardBtn" onclick="joinBoard()" disabled>Join Board</button>
+            <button class="clear-btn" onclick="clearEvents()">Clear Events</button>
+        </div>
+
+        <div class="events-panel">
+            <div class="panel">
+                <h2>📡 Socket Events</h2>
+                <div id="eventsList"></div>
+            </div>
+
+            <div class="panel">
+                <h2>🎯 Board State (Pawns)</h2>
+                <div id="pawnsContainer">
+                    <p style="color: #999; text-align: center; padding: 20px;">No pawns loaded yet. Join a board to see pawns.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket = null;
+        let currentBoardId = null;
+        let currentPlayerId = null;
+
+        function addEvent(type, data, className = '') {
+            const eventsList = document.getElementById('eventsList');
+            const eventItem = document.createElement('div');
+            eventItem.className = `event-item ${className}`;
+            
+            const time = new Date().toLocaleTimeString();
+            eventItem.innerHTML = `
+                <strong>${type}</strong>
+                <pre style="margin-top: 8px; font-size: 11px; white-space: pre-wrap; word-break: break-all;">${JSON.stringify(data, null, 2)}</pre>
+                <div class="event-time">${time}</div>
+            `;
+            
+            eventsList.insertBefore(eventItem, eventsList.firstChild);
+            
+            // Keep only last 50 events
+            while (eventsList.children.length > 50) {
+                eventsList.removeChild(eventsList.lastChild);
+            }
+        }
+
+        function updateStatus(connected) {
+            const statusEl = document.getElementById('status');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            const joinBoardBtn = document.getElementById('joinBoardBtn');
+
+            if (connected) {
+                statusEl.className = 'status connected';
+                statusEl.textContent = '🟢 Connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                joinBoardBtn.disabled = false;
+            } else {
+                statusEl.className = 'status disconnected';
+                statusEl.textContent = '🔴 Disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                joinBoardBtn.disabled = true;
+            }
+        }
+
+        function connectSocket() {
+            const backendUrl = document.getElementById('backendUrl').value;
+            
+            if (!backendUrl) {
+                alert('Please enter backend URL');
+                return;
+            }
+
+            if (socket) {
+                socket.disconnect();
+            }
+
+            socket = io(backendUrl, {
+                transports: ['websocket', 'polling']
+            });
+
+            // Connection events
+            socket.on('connect', () => {
+                addEvent('connect', { socketId: socket.id }, 'success');
+                updateStatus(true);
+            });
+
+            socket.on('disconnect', (reason) => {
+                addEvent('disconnect', { reason }, 'error');
+                updateStatus(false);
+            });
+
+            socket.on('connect_error', (error) => {
+                addEvent('connect_error', { message: error.message }, 'error');
+            });
+
+            // Board events
+            socket.on('board_state', (data) => {
+                addEvent('board_state', data, 'success');
+                updatePawns(data.data?.pawns || []);
+            });
+
+            socket.on('board_update', (data) => {
+                addEvent('board_update', data, 'success');
+                updatePawns(data.data?.pawns || []);
+            });
+
+            socket.on('pawn_moved', (data) => {
+                addEvent('pawn_moved', data, 'success');
+                // Refresh pawns if we have board state
+                if (currentBoardId) {
+                    // The board_update will come after this, so we can wait
+                }
+            });
+
+            // Game events
+            socket.on('game_event', (event) => {
+                addEvent('game_event', event, 'warning');
+                
+                if (event.type === 'player_completed') {
+                    alert(`🎉 Player ${event.data.playerId} completed all pawns!`);
+                }
+                if (event.type === 'winner_updated') {
+                    alert(`🏆 Winner #${event.data.position}: ${event.data.playerId}`);
+                }
+            });
+
+            // Other events
+            socket.on('player_joined', (data) => {
+                addEvent('player_joined', data, 'success');
+            });
+
+            socket.on('dice_rolled', (data) => {
+                addEvent('dice_rolled', data, 'success');
+            });
+
+            socket.on('error', (error) => {
+                addEvent('error', error, 'error');
+            });
+        }
+
+        function disconnectSocket() {
+            if (socket) {
+                if (currentBoardId) {
+                    socket.emit('leave_board', { boardId: currentBoardId });
+                }
+                socket.disconnect();
+                socket = null;
+                currentBoardId = null;
+                currentPlayerId = null;
+                updateStatus(false);
+                document.getElementById('pawnsContainer').innerHTML = 
+                    '<p style="color: #999; text-align: center; padding: 20px;">No pawns loaded yet. Join a board to see pawns.</p>';
+            }
+        }
+
+        function joinBoard() {
+            const boardId = document.getElementById('boardId').value;
+            const playerId = document.getElementById('playerId').value;
+
+            if (!boardId || !playerId) {
+                alert('Please enter both Board ID and Player ID');
+                return;
+            }
+
+            if (!socket || !socket.connected) {
+                alert('Please connect first');
+                return;
+            }
+
+            currentBoardId = boardId;
+            currentPlayerId = playerId;
+
+            socket.emit('join_board', { boardId, playerId });
+            addEvent('join_board (emitted)', { boardId, playerId }, 'success');
+        }
+
+        function updatePawns(pawns) {
+            const container = document.getElementById('pawnsContainer');
+            
+            if (!pawns || pawns.length === 0) {
+                container.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No pawns found.</p>';
+                return;
+            }
+
+            container.innerHTML = pawns.map(pawn => {
+                const colorClass = `color-${pawn.color || 'gray'}`;
+                return `
+                    <div class="pawn-card">
+                        <h3>
+                            Pawn ID: ${pawn.id.substring(0, 8)}...
+                            <span class="color-badge ${colorClass}">${pawn.color || 'N/A'}</span>
+                        </h3>
+                        <div class="pawn-info">
+                            <div><strong>Player:</strong> ${pawn.playerId?.substring(0, 8) || 'N/A'}...</div>
+                            <div><strong>Type:</strong> ${pawn.type || 'N/A'}</div>
+                            <div><strong>Current Position:</strong> ${pawn.currentPosition ?? '0'}</div>
+                            <div><strong>Previous Position:</strong> ${pawn.prevPosition ?? '-1'}</div>
+                            <div><strong>Next Position:</strong> ${pawn.nextPosition ?? 'N/A'}</div>
+                            <div><strong>Is Safe:</strong> ${pawn.isSafe ? 'Yes' : 'No'}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function clearEvents() {
+            document.getElementById('eventsList').innerHTML = '';
+        }
+
+        // Allow Enter key to join board
+        document.getElementById('boardId').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                joinBoard();
+            }
+        });
+
+        document.getElementById('playerId').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                joinBoard();
+            }
+        });
+    </script>
+</body>
+</html>
+
