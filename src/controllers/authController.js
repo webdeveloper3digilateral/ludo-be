@@ -57,16 +57,26 @@ export const loginUser = async (req, res) => {
     const fetchActiveBoardForPlayer = async playerId => {
       try {
         const [boardRows] = await db.execute(
-          `SELECT id, status FROM boards 
-           WHERE status = 'active' AND (player1 = ? OR player2 = ? OR player3 = ? OR player4 = ?)
+          `SELECT id FROM boards 
+           WHERE status = 'active' 
+             AND (player1 = ? OR player2 = ? OR player3 = ? OR player4 = ?)
+           ORDER BY startTime DESC, id DESC
            LIMIT 1`,
           [playerId, playerId, playerId, playerId]
         );
 
         if (boardRows.length > 0) {
           const board = boardRows[0];
+          const [colorRows] = await db.execute(
+            `SELECT color FROM pawns 
+             WHERE boardId = ? AND playerId = ? 
+             LIMIT 1`,
+            [board.id, playerId]
+          );
+
           return {
-            boardId: board.id
+            boardId: board.id,
+            myColor: colorRows.length > 0 ? colorRows[0].color : null,
           };
         }
       } catch (boardError) {
@@ -92,8 +102,8 @@ export const loginUser = async (req, res) => {
         id: userId,
         name: foundUser.name || foundUser.tlmName || foundUser.slmName || foundUser.flmName || foundUser.mrName,
         role: userRole,
-        ...(currentBoard ? { currentBoard } : {}),
       },
+      ...(currentBoard ? { currentBoard: currentBoard } : {}),
     });
   } catch (error) {
     console.error("Login error:", error);

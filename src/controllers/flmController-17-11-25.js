@@ -1,9 +1,4 @@
 import db from "../config/db.js";
-import {
-  getISTDateTime,
-  formatISTDateTimeForSQL,
-  formatISTDateForSQL,
-} from "../utils/istDateTime.js";
 import { emitBoardUpdate } from "../socket/socketHandlers.js";
 import path from "node:path";
 import fs from "fs";
@@ -128,31 +123,16 @@ const buildFilterCte = () => `
   )
 `;
 
-const buildPointsFilterCte = (brandFilter = null, hasDateFilter = true) => {
-  let brandWhereClause = "";
-  if (brandFilter && brandFilter.brandId) {
-    brandWhereClause = " AND p.brandId = ?";
-  } else if (brandFilter && brandFilter.brandName) {
-    brandWhereClause = " AND p.brandName = ?";
-  }
-  
-  const dateWhereClause = hasDateFilter ? "AND p.reviewDate BETWEEN ? AND ?" : "";
-  
-  // Always include all upload types (prescription, pob, camp)
-  const typeWhereClause = "AND p.type IN ('prescription', 'pob', 'camp')";
-  
-  return `
+const buildPointsFilterCte = () => `
   WITH filteredPoints AS (
     SELECT
       m.flmId,
       SUM(p.points) AS totalPoints
-    FROM uploads p
+    FROM prescriptions p
     JOIN mrs m ON p.mrId = m.mrId
     WHERE p.status = 'approved'
       AND p.isCalculated = 1
-      ${typeWhereClause}
-      ${dateWhereClause}
-      ${brandWhereClause}
+      AND p.reviewDate BETWEEN ? AND ?
     GROUP BY m.flmId
   ),
   flmPointMetrics AS (
@@ -165,7 +145,6 @@ const buildPointsFilterCte = (brandFilter = null, hasDateFilter = true) => {
     LEFT JOIN filteredPoints fp ON fp.flmId = f.flmId
   )
 `;
-};
 
 const buildKillsFilterCte = () => `
   WITH filteredKills AS (
@@ -236,51 +215,6 @@ const buildMovesLostFilterCte = includeDateFilter => `
   )
 `;
 
-const buildDiceRollBalanceFilterCte = () => `
-  WITH latestLogs AS (
-    SELECT
-      ml.playerId,
-      ml.atDiceRollBalance,
-      ml.moveTime,
-      ROW_NUMBER() OVER (PARTITION BY ml.playerId ORDER BY ml.moveTime DESC, ml.id DESC) AS rn
-    FROM moveLogs ml
-    WHERE ml.moveTime BETWEEN ? AND ?
-      AND ml.atDiceRollBalance IS NOT NULL
-  ),
-  flmDiceRollMetrics AS (
-    SELECT
-      f.flmId,
-      f.flmName,
-      f.slmId,
-      COALESCE(ll.atDiceRollBalance, 0) AS metricValue
-    FROM flms f
-    LEFT JOIN latestLogs ll ON ll.playerId = f.flmId AND ll.rn = 1
-  )
-`;
-
-const buildMrDiceRollBalanceFilterCte = () => `
-  WITH filteredMrDiceRoll AS (
-    SELECT
-      m.mrId,
-      SUM(p.diceRollBalance) AS totalDiceRollBalance
-    FROM uploads p
-    JOIN mrs m ON p.mrId = m.mrId
-    WHERE p.type = 'prescription'
-      AND p.status = 'approved'
-      AND p.isCalculated = 1
-      AND p.reviewDate BETWEEN ? AND ?
-    GROUP BY m.mrId
-  ),
-  mrDiceRollMetrics AS (
-    SELECT
-      m.mrId,
-      COALESCE(m.mrName, 'Unassigned') AS mrName,
-      COALESCE(fmdr.totalDiceRollBalance, 0) AS metricValue
-    FROM mrs m
-    LEFT JOIN filteredMrDiceRoll fmdr ON fmdr.mrId = m.mrId
-  )
-`;
-
 
 
 //to view the board
@@ -330,7 +264,7 @@ export const getMyBoard = async (req, res) => {
       const placeholders = playerIds.map(() => "?").join(", ");
 
       const [playerRows] = await connection.execute(
-        `SELECT flmId, flmName, currentBalanceMoves, hearts
+        `SELECT flmId, flmName, currentBalanceMoves, diamonds
          FROM flms
          WHERE flmId IN (${placeholders})`,
         playerIds
@@ -374,7 +308,7 @@ export const getMyBoard = async (req, res) => {
             playerInfo.currentBalanceMoves !== undefined
               ? Number(playerInfo.currentBalanceMoves)
               : null,
-          hearts: playerInfo.hearts !== undefined ? Number(playerInfo.hearts) : null,
+          diamonds: playerInfo.diamonds !== undefined ? Number(playerInfo.diamonds) : null,
         };
       });
     }
@@ -781,12 +715,11 @@ export const movePawnFromFE = async (req, res) => {
         const baseMoves = Number.isFinite(Number(totalMoves)) ? Number(totalMoves) : 0;
         const newMoves = Math.max(baseMoves - 1, 0);
 
-        const updatedAtIST = formatISTDateTimeForSQL();
         await connection.execute(
           `UPDATE flms 
-           SET moves = ?, currentBalanceMoves = ?, updatedAt = ?
+           SET moves = ?, currentBalanceMoves = ?
            WHERE flmId = ?`,
-          [newMoves, newMoves, updatedAtIST, playerId]
+          [newMoves, newMoves, playerId]
         );
 
         updatedBalanceMoves = newMoves;
@@ -796,12 +729,11 @@ export const movePawnFromFE = async (req, res) => {
           : 0;
         const newBalance = Math.max(balanceValue - 1, 0);
 
-        const updatedAtIST = formatISTDateTimeForSQL();
         await connection.execute(
           `UPDATE flms 
-           SET currentBalanceMoves = ?, updatedAt = ?
+           SET currentBalanceMoves = ?
            WHERE flmId = ?`,
-          [newBalance, updatedAtIST, playerId]
+          [newBalance, playerId]
         );
 
         updatedBalanceMoves = newBalance;
@@ -832,12 +764,11 @@ export const movePawnFromFE = async (req, res) => {
         ]
       );
 
-      const updatedAtIST = formatISTDateTimeForSQL();
       await connection.execute(
         `UPDATE flms 
-         SET kills = COALESCE(kills, 0) + 1, updatedAt = ?
+         SET kills = COALESCE(kills, 0) + 1 
          WHERE flmId = ?`,
-        [updatedAtIST, playerId]
+        [playerId]
       );
     }
 
@@ -915,14 +846,13 @@ export const movePawnFromFE = async (req, res) => {
 
                   if (loser) {
                     // Update loser and mark game as finished
-                    const endTimeIST = formatISTDateTimeForSQL();
                     await connection.execute(
                       `UPDATE boards 
                        SET loser = ?, 
                            status = 'finished',
-                           endTime = ?
+                           endTime = NOW()
                        WHERE id = ?`,
-                      [loser, endTimeIST, boardId]
+                      [loser, boardId]
                     );
 
                     gameFinished = true;
@@ -1635,12 +1565,11 @@ export const movePawnFromSocket = async (socket, data) => {
         : Number(totalMoves) || 0;
       const newBalance = Math.max(baseMoves - 1, 0);
 
-      const updatedAtIST = formatISTDateTimeForSQL();
       await connection.execute(
         `UPDATE flms 
-         SET currentBalanceMoves = ?, moves = GREATEST(moves - 1, 0), updatedAt = ?
+         SET currentBalanceMoves = ?, moves = GREATEST(moves - 1, 0)
          WHERE flmId = ?`,
-        [newBalance, updatedAtIST, playerId]
+        [newBalance, playerId]
       );
 
       updatedBalanceMoves = newBalance;
@@ -1664,10 +1593,9 @@ export const movePawnFromSocket = async (socket, data) => {
         ]
       );
 
-      const updatedAtIST = formatISTDateTimeForSQL();
       await connection.execute(
-        `UPDATE flms SET kills = COALESCE(kills, 0) + 1, updatedAt = ? WHERE flmId = ?`,
-        [updatedAtIST, playerId]
+        `UPDATE flms SET kills = COALESCE(kills, 0) + 1 WHERE flmId = ?`,
+        [playerId]
       );
     }
 
@@ -1738,12 +1666,11 @@ export const movePawnFromSocket = async (socket, data) => {
                   );
 
                   if (losers) {
-                    const endTimeIST = formatISTDateTimeForSQL();
                     await connection.execute(
                       `UPDATE boards 
-                       SET loser = ?, status = 'finished', endTime = ?
+                       SET loser = ?, status = 'finished', endTime = NOW()
                        WHERE id = ?`,
-                      [losers, endTimeIST, boardId]
+                      [losers, boardId]
                     );
 
                     gameFinished = true;
@@ -1944,8 +1871,8 @@ export const getFlmStats = async (req, res) => {
   }
 };
 
-//only prescription related functions
-//not in use currently
+//prescription related functions
+
 export const getPendingPrescriptionsForFlm = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -2011,11 +1938,10 @@ export const getPendingPrescriptionsForFlm = async (req, res) => {
           m.region AS mrRegion,
           b.points AS brandPoints,
           (p.points) AS totalPoints
-       FROM uploads p
+       FROM prescriptions p
        JOIN mrs m ON p.mrId = m.mrId
-       LEFT JOIN brands b ON p.brandId = b.id
-       WHERE p.type = 'prescription'
-         AND m.flmId = ?
+       JOIN brands b ON p.brandId = b.id
+       WHERE m.flmId = ?
          AND p.status = 'pending'
           ${whereDateClause}
        ORDER BY p.updatedAt DESC, p.dateOfUpload DESC, p.timeOfUpload DESC`,
@@ -2039,8 +1965,6 @@ export const getPendingPrescriptionsForFlm = async (req, res) => {
   }
 };
 
-//only prescription related functions
-//not in use currently
 export const getPrescriptionForFlm = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -2054,26 +1978,6 @@ export const getPrescriptionForFlm = async (req, res) => {
       });
     }
 
-    // OLD CODE - using prescriptions table
-    // const [rows] = await connection.execute(
-    //   `SELECT 
-    //      p.*,
-    //      m.mrName,
-    //      m.mrId,
-    //      m.zone AS mrZone,
-    //      m.region AS mrRegion,
-    //      m.hq AS mrHq,
-    //      b.points AS brandPoints,
-    //      p.points AS totalPoints
-    //    FROM prescriptions p
-    //    JOIN mrs m ON p.mrId = m.mrId
-    //    JOIN flms f ON m.flmId = f.flmId
-    //    LEFT JOIN brands b ON p.brandId = b.id
-    //    WHERE f.flmId = ? AND p.id = ?
-    //    LIMIT 1`,
-    //   [flmId, prescriptionId]
-    // );
-
     const [rows] = await connection.execute(
       `SELECT 
          p.*,
@@ -2084,12 +1988,11 @@ export const getPrescriptionForFlm = async (req, res) => {
          m.hq AS mrHq,
          b.points AS brandPoints,
          p.points AS totalPoints
-       FROM uploads p
+       FROM prescriptions p
        JOIN mrs m ON p.mrId = m.mrId
        JOIN flms f ON m.flmId = f.flmId
        LEFT JOIN brands b ON p.brandId = b.id
-       WHERE p.type = 'prescription'
-         AND f.flmId = ? AND p.id = ?
+       WHERE f.flmId = ? AND p.id = ?
        LIMIT 1`,
       [flmId, prescriptionId]
     );
@@ -2121,7 +2024,7 @@ export const getPrescriptionForFlm = async (req, res) => {
         scCode: prescription.scCode,
         noRxns: prescription.noRxns,
         rxnDuration: prescription.rxnDuration,
-        prescriptionImage: prescription.uploadImage,
+        prescriptionImage: prescription.prescriptionImage,
         dateOfUpload: prescription.dateOfUpload,
         timeOfUpload: prescription.timeOfUpload,
         points: prescription.points,
@@ -2146,172 +2049,13 @@ export const getPrescriptionForFlm = async (req, res) => {
     if (connection) connection.release();
   }
 };
-//end only prescription related functions
 
 
-
-export const getPendingUploadsForFlm = async (req, res) => {
+export const reviewPrescription = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { flmId } = req.params;
-    const {
-      date,
-      startDate,
-      endDate,
-      today,
-      type, // Optional: filter by type ('prescription', 'pob', 'camp')
-    } = req.query;
-
-    if (!flmId) {
-      return res.status(400).json({
-        success: false,
-        message: "FLM ID is required",
-      });
-    }
-
-    const [flmRows] = await connection.execute(
-      "SELECT flmId FROM flms WHERE flmId = ? LIMIT 1",
-      [flmId]
-    );
-
-    if (flmRows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "FLM not found",
-      });
-    }
-
-    const dateFilters = [];
-    const dateParams = [];
-
-    const normalizedToday =
-      today === true || today === "true" || today === "1";
-
-    if (normalizedToday) {
-      dateFilters.push("DATE(p.dateOfUpload) = CURDATE()");
-    } else if (date) {
-      dateFilters.push("DATE(p.dateOfUpload) = ?");
-      dateParams.push(date);
-    } else if (startDate && endDate) {
-      dateFilters.push("DATE(p.dateOfUpload) BETWEEN ? AND ?");
-      dateParams.push(startDate, endDate);
-    } else if (startDate) {
-      dateFilters.push("DATE(p.dateOfUpload) >= ?");
-      dateParams.push(startDate);
-    } else if (endDate) {
-      dateFilters.push("DATE(p.dateOfUpload) <= ?");
-      dateParams.push(endDate);
-    }
-
-    const whereDateClause =
-      dateFilters.length > 0 ? ` AND ${dateFilters.join(" AND ")}` : "";
-
-    // Build type filter clause
-    let typeFilterClause = "";
-    if (type && ["prescription", "pob", "camp"].includes(type.toLowerCase())) {
-      typeFilterClause = " AND p.type = ?";
-      dateParams.push(type.toLowerCase());
-    }
-
-    const [pendingUploads] = await connection.execute(
-      `SELECT 
-          p.*,
-          m.mrName
-       FROM uploads p
-       JOIN mrs m ON p.mrId = m.mrId
-       WHERE m.flmId = ?
-         AND p.status = 'pending'
-          ${whereDateClause}
-          ${typeFilterClause}
-       ORDER BY p.updatedAt DESC, p.dateOfUpload DESC, p.timeOfUpload DESC`,
-      [flmId, ...dateParams]
-    );
-
-    res.status(200).json({
-      success: true,
-      data: pendingUploads,
-      total: pendingUploads.length,
-    });
-  } catch (error) {
-    console.error("Error fetching pending uploads for FLM:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  } finally {
-    if (connection) connection.release();
-  }
-};
-
-export const getUploadForFlm = async (req, res) => {
-  const connection = await db.getConnection();
-
-  try {
-    const { flmId, uploadId } = req.params;
-
-    if (!flmId || !uploadId) {
-      return res.status(400).json({
-        success: false,
-        message: "flmId and uploadId are required",
-      });
-    }
-
-    const [rows] = await connection.execute(
-      `SELECT 
-         p.*,
-         m.mrName,
-         m.mrId,
-         m.zone AS mrZone,
-         m.hq AS mrHq,
-         m.region AS mrRegion,
-         b.points AS brandPoints,
-         b.countType AS countType,
-         b.unitFactor AS unitFactor,
-         b.valueFactor AS valueFactor,
-         c.points AS campPoints,
-         (p.points) AS totalPoints
-       FROM uploads p
-       JOIN mrs m ON p.mrId = m.mrId
-       JOIN flms f ON m.flmId = f.flmId
-       LEFT JOIN brands b ON p.brandId = b.id
-       LEFT JOIN camps c ON p.campId = c.id
-       WHERE f.flmId = ? AND p.id = ?
-       LIMIT 1`,
-      [flmId, uploadId]
-    );
-
-    if (rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Upload not found for this FLM",
-      });
-    }
-
-    const upload = rows[0];
-
-    return res.status(200).json({
-      success: true,
-      data: upload,
-    });
-  } catch (error) {
-    console.error("Error fetching upload for FLM:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  } finally {
-    if (connection) connection.release();
-  }
-};
-
-export const reviewUpload = async (req, res) => {
-  const connection = await db.getConnection();
-
-  try {
-    const { flmId, uploadId } = req.params;
+    const { flmId, prescriptionId } = req.params;
     const { action, rejectionReason } = req.body;
 
     if (!["approve", "reject"].includes(action)) {
@@ -2321,59 +2065,48 @@ export const reviewUpload = async (req, res) => {
       });
     }
 
-    if (!uploadId) {
-      return res.status(400).json({
-        success: false,
-        message: "uploadId is required",
-      });
-    }
-
     await connection.beginTransaction();
 
-    const [uploadRows] = await connection.execute(
+    const [prescriptionRows] = await connection.execute(
       `SELECT p.*, m.mrId
-       FROM uploads p
+       FROM prescriptions p
        JOIN mrs m ON p.mrId = m.mrId
        WHERE p.id = ? AND m.flmId = ?
        LIMIT 1
        FOR UPDATE`,
-      [uploadId, flmId]
+      [prescriptionId, flmId]
     );
 
-    if (uploadRows.length === 0) {
+    if (prescriptionRows.length === 0) {
       await connection.rollback();
       return res.status(404).json({
         success: false,
-        message: "Upload not found for this FLM",
+        message: "Prescription not found for this FLM",
       });
     }
 
-    const upload = uploadRows[0];
+    const prescription = prescriptionRows[0];
 
-    if (upload.status !== "pending") {
+    if (prescription.status !== "pending") {
       await connection.rollback();
       return res.status(400).json({
         success: false,
-        message: "Only pending uploads can be reviewed",
+        message: "Only pending prescriptions can be reviewed",
       });
     }
 
     if (action === "approve") {
-      // Get IST datetime for reviewDate (always IST regardless of server timezone)
-      const reviewDateIST = formatISTDateTimeForSQL();
-
       await connection.execute(
-        `UPDATE uploads
+        `UPDATE prescriptions
          SET status = 'approved',
              rejectionReason = NULL,
-             reviewDate = ?,
-             isCalculated = 1,
-             updatedAt = ?
+             reviewDate = NOW(),
+             isCalculated = 1
          WHERE id = ?`,
-        [reviewDateIST, reviewDateIST, uploadId]
+        [prescriptionId]
       );
 
-      const points = Number(upload.points) || 0;
+      const points = Number(prescription.points) || 0;
 
       if (points > 0) {
         const [configRows] = await connection.execute(
@@ -2410,165 +2143,31 @@ export const reviewUpload = async (req, res) => {
 
         const computedMoves = points * moveFactor;
         const movesToAdd = Number.isFinite(computedMoves) ? computedMoves : points;
-        const diceRollBalance = movesToAdd;
 
-        await connection.execute(
-          `UPDATE uploads
-           SET diceRollBalance = ?
-           WHERE id = ?`,
-          [diceRollBalance, uploadId]
-        );
-
-        const updatedAtIST = formatISTDateTimeForSQL();
         await connection.execute(
           `UPDATE mrs 
-           SET points = COALESCE(points, 0) + ?,
-               diceRollBalance = COALESCE(diceRollBalance, 0) + ?,
-               updatedAt = ?
+           SET points = COALESCE(points, 0) + ?
            WHERE mrId = ?`,
-          [points, diceRollBalance, updatedAtIST, upload.mrId]
+          [points, prescription.mrId]
         );
 
         await connection.execute(
           `UPDATE flms 
            SET points = COALESCE(points, 0) + ?,
-               currentDiceRollBalance = COALESCE(currentDiceRollBalance, 0) + ?,
-               updatedAt = ?
+            
+               currentDiceRollBalance = COALESCE(currentDiceRollBalance, 0) + ?
            WHERE flmId = ?`,
-          [points, movesToAdd, updatedAtIST, flmId]
+          [points, movesToAdd, flmId]
         );
       }
 
-      // Award hearts and/or dice rolls for prescription, POB, and camp approvals
-      if (upload.type === "prescription" && upload.brandId) {
-        const [brandRows] = await connection.execute(
-          `SELECT hearts, diceRolls FROM brands WHERE id = ?`,
-          [upload.brandId]
-        );
-
-        if (brandRows.length > 0) {
-          const brand = brandRows[0];
-          const noRxns = Number(upload.noRxns) || 1;
-          
-          // Award hearts if specified
-          const brandHearts = Number(brand.hearts) || 0;
-          if (brandHearts > 0) {
-            const heartsToAward = brandHearts * noRxns;
-            await connection.execute(
-              `UPDATE flms 
-               SET hearts = COALESCE(hearts, 0) + ?,
-                   updatedAt = ?
-               WHERE flmId = ?`,
-              [heartsToAward, updatedAtIST, flmId]
-            );
-          }
-
-          // Award dice rolls if specified
-          const brandDiceRolls = Number(brand.diceRolls) || 0;
-          if (brandDiceRolls > 0) {
-            const diceRollsToAward = brandDiceRolls * noRxns;
-            await connection.execute(
-              `UPDATE flms 
-               SET currentDiceRollBalance = COALESCE(currentDiceRollBalance, 0) + ?,
-                   updatedAt = ?
-               WHERE flmId = ?`,
-              [diceRollsToAward, updatedAtIST, flmId]
-            );
-          }
-        }
-      } else if (upload.type === "pob" && upload.brandId) {
-        const [brandRows] = await connection.execute(
-          `SELECT hearts, diceRolls, countType FROM brands WHERE id = ?`,
-          [upload.brandId]
-        );
-
-        if (brandRows.length > 0) {
-          const brand = brandRows[0];
-          // Determine multiplier based on countType
-          let multiplier = 1;
-          const brandCountType = brand.countType ? brand.countType.toLowerCase() : null;
-          
-          if (brandCountType === "unit") {
-            multiplier = Number(upload.noOfUnits) || 1;
-          } else if (brandCountType === "value") {
-            multiplier = Number(upload.allValue) || 1;
-          } else {
-            // Fallback: use noOfUnits or allValue (whichever is available)
-            multiplier = Number(upload.noOfUnits || upload.allValue) || 1;
-          }
-          
-          // Award hearts if specified
-          const brandHearts = Number(brand.hearts) || 0;
-          if (brandHearts > 0) {
-            const heartsToAward = brandHearts * multiplier;
-            await connection.execute(
-              `UPDATE flms 
-               SET hearts = COALESCE(hearts, 0) + ?,
-                   updatedAt = ?
-               WHERE flmId = ?`,
-              [heartsToAward, updatedAtIST, flmId]
-            );
-          }
-
-          // Award dice rolls if specified
-          const brandDiceRolls = Number(brand.diceRolls) || 0;
-          if (brandDiceRolls > 0) {
-            const diceRollsToAward = brandDiceRolls * multiplier;
-            await connection.execute(
-              `UPDATE flms 
-               SET currentDiceRollBalance = COALESCE(currentDiceRollBalance, 0) + ?,
-                   updatedAt = ?
-               WHERE flmId = ?`,
-              [diceRollsToAward, updatedAtIST, flmId]
-            );
-          }
-        }
-      } else if (upload.type === "camp" && upload.campId) {
-        const [campRows] = await connection.execute(
-          `SELECT hearts, diceRolls FROM camps WHERE id = ?`,
-          [upload.campId]
-        );
-
-        if (campRows.length > 0) {
-          const camp = campRows[0];
-          const noOfCamps = Number(upload.noOfCamps) || 1;
-          
-          // Award hearts if specified
-          const campHearts = Number(camp.hearts) || 0;
-          if (campHearts > 0) {
-            const heartsToAward = campHearts * noOfCamps;
-            await connection.execute(
-              `UPDATE flms 
-               SET hearts = COALESCE(hearts, 0) + ?,
-                   updatedAt = ?
-               WHERE flmId = ?`,
-              [heartsToAward, updatedAtIST, flmId]
-            );
-          }
-
-          // Award dice rolls if specified
-          const campDiceRolls = Number(camp.diceRolls) || 0;
-          if (campDiceRolls > 0) {
-            const diceRollsToAward = campDiceRolls * noOfCamps;
-            await connection.execute(
-              `UPDATE flms 
-               SET currentDiceRollBalance = COALESCE(currentDiceRollBalance, 0) + ?,
-                   updatedAt = ?
-               WHERE flmId = ?`,
-              [diceRollsToAward, updatedAtIST, flmId]
-            );
-          }
-        }
-      }
-//end
       await connection.commit();
 
-    return res.status(200).json({
-      success: true,
-        message: "Upload approved successfully",
+      return res.status(200).json({
+        success: true,
+        message: "Prescription approved successfully",
         data: {
-          uploadId: uploadId,
-          type: upload.type,
+          prescriptionId,
           status: "approved",
         },
       });
@@ -2577,32 +2176,27 @@ export const reviewUpload = async (req, res) => {
         await connection.rollback();
         return res.status(400).json({
           success: false,
-          message: "Rejection reason is required when rejecting an upload",
+          message: "Rejection reason is required when rejecting a prescription",
         });
       }
 
-      // Get IST datetime for reviewDate (always IST regardless of server timezone)
-      const reviewDateIST = formatISTDateTimeForSQL();
-
       await connection.execute(
-        `UPDATE uploads
+        `UPDATE prescriptions
          SET status = 'rejected',
              rejectionReason = ?,
-             reviewDate = ?,
-             isCalculated = 0,
-             updatedAt = ?
+             reviewDate = NOW(),
+             isCalculated = 0
          WHERE id = ?`,
-        [rejectionReason, reviewDateIST, reviewDateIST, uploadId]
+        [rejectionReason, prescriptionId]
       );
 
       await connection.commit();
 
       return res.status(200).json({
         success: true,
-        message: "Upload rejected successfully",
+        message: "Prescription rejected successfully",
         data: {
-          uploadId: uploadId,
-          type: upload.type,
+          prescriptionId,
           status: "rejected",
           rejectionReason,
         },
@@ -2610,7 +2204,7 @@ export const reviewUpload = async (req, res) => {
     }
   } catch (error) {
     if (connection) await connection.rollback();
-    console.error("Error reviewing upload:", error);
+    console.error("Error reviewing prescription:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -2621,233 +2215,13 @@ export const reviewUpload = async (req, res) => {
   }
 };
 
-
-//before handling diff upload types
-// export const reviewPrescription = async (req, res) => {
-//   const connection = await db.getConnection();
-
-//   try {
-//     const { flmId, prescriptionId } = req.params;
-//     const { action, rejectionReason } = req.body;
-
-//     if (!["approve", "reject"].includes(action)) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "Invalid action. Use 'approve' or 'reject'.",
-//       });
-//     }
-
-//     await connection.beginTransaction();
-
-//     // OLD CODE - using prescriptions table
-//     // const [prescriptionRows] = await connection.execute(
-//     //   `SELECT p.*, m.mrId
-//     //    FROM prescriptions p
-//     //    JOIN mrs m ON p.mrId = m.mrId
-//     //    WHERE p.id = ? AND m.flmId = ?
-//     //    LIMIT 1
-//     //    FOR UPDATE`,
-//     //   [prescriptionId, flmId]
-//     // );
-
-//     const [prescriptionRows] = await connection.execute(
-//       `SELECT p.*, m.mrId
-//        FROM uploads p
-//        JOIN mrs m ON p.mrId = m.mrId
-//        WHERE p.type = 'prescription'
-//          AND p.id = ? AND m.flmId = ?
-//        LIMIT 1
-//        FOR UPDATE`,
-//       [prescriptionId, flmId]
-//     );
-
-//     if (prescriptionRows.length === 0) {
-//       await connection.rollback();
-//       return res.status(404).json({
-//         success: false,
-//         message: "Prescription not found for this FLM",
-//       });
-//     }
-
-//     const prescription = prescriptionRows[0];
-
-//     if (prescription.status !== "pending") {
-//       await connection.rollback();
-//       return res.status(400).json({
-//         success: false,
-//         message: "Only pending prescriptions can be reviewed",
-//       });
-//     }
-
-//     if (action === "approve") {
-//       // OLD CODE - using prescriptions table
-//       // await connection.execute(
-//       //   `UPDATE prescriptions
-//       //    SET status = 'approved',
-//       //        rejectionReason = NULL,
-//       //        reviewDate = NOW(),
-//       //        isCalculated = 1
-//       //    WHERE id = ?`,
-//       //   [prescriptionId]
-//       // );
-
-//       await connection.execute(
-//         `UPDATE uploads
-//          SET status = 'approved',
-//              rejectionReason = NULL,
-//              reviewDate = NOW(),
-//              isCalculated = 1
-//          WHERE type = 'prescription'
-//            AND id = ?`,
-//         [prescriptionId]
-//       );
-
-//       const points = Number(prescription.points) || 0;
-
-//       if (points > 0) {
-//         const [configRows] = await connection.execute(
-//           `SELECT medianValue, lessMedianFactor, greaterMedianFactor
-//            FROM moveAdjustmentConfigs
-//            ORDER BY createdAt DESC
-//            LIMIT 1`
-//         );
-
-//         const config = configRows?.[0] ?? {};
-//         const medianValue = Number(config.medianValue);
-//         const lessMedianFactor = Number(config.lessMedianFactor);
-//         const greaterMedianFactor = Number(config.greaterMedianFactor);
-
-//         const [flmRows] = await connection.execute(
-//           `SELECT mrCount
-//            FROM flms
-//            WHERE flmId = ?
-//            LIMIT 1
-//            FOR UPDATE`,
-//           [flmId]
-//         );
-
-//         const mrCount = Number(flmRows?.[0]?.mrCount) || 0;
-
-//         let moveFactor = 1;
-//         if (Number.isFinite(medianValue)) {
-//           if (mrCount < medianValue && Number.isFinite(lessMedianFactor)) {
-//             moveFactor = lessMedianFactor;
-//           } else if (mrCount > medianValue && Number.isFinite(greaterMedianFactor)) {
-//             moveFactor = greaterMedianFactor;
-//           }
-//         }
-
-//         const computedMoves = points * moveFactor;
-//         const movesToAdd = Number.isFinite(computedMoves) ? computedMoves : points;
-//         const diceRollBalance = movesToAdd;
-
-//         // OLD CODE - using prescriptions table
-//         // await connection.execute(
-//         //   `UPDATE prescriptions
-//         //    SET diceRollBalance = ?
-//         //    WHERE id = ?`,
-//         //   [diceRollBalance, prescriptionId]
-//         // );
-
-//         await connection.execute(
-//           `UPDATE uploads
-//            SET diceRollBalance = ?
-//            WHERE type = 'prescription'
-//              AND id = ?`,
-//           [diceRollBalance, prescriptionId]
-//         );
-
-//         await connection.execute(
-//           `UPDATE mrs 
-//            SET points = COALESCE(points, 0) + ?,
-//                diceRollBalance = COALESCE(diceRollBalance, 0) + ?
-//            WHERE mrId = ?`,
-//           [points, diceRollBalance, prescription.mrId]
-//         );
-
-//         await connection.execute(
-//           `UPDATE flms 
-//            SET points = COALESCE(points, 0) + ?,
-//                currentDiceRollBalance = COALESCE(currentDiceRollBalance, 0) + ?
-//            WHERE flmId = ?`,
-//           [points, movesToAdd, flmId]
-//         );
-//       }
-
-//       await connection.commit();
-
-//       return res.status(200).json({
-//         success: true,
-//         message: "Prescription approved successfully",
-//         data: {
-//           prescriptionId,
-//           status: "approved",
-//         },
-//       });
-//     } else {
-//       if (!rejectionReason || rejectionReason.toString().trim().length === 0) {
-//         await connection.rollback();
-//         return res.status(400).json({
-//           success: false,
-//           message: "Rejection reason is required when rejecting a prescription",
-//         });
-//       }
-
-//       // OLD CODE - using prescriptions table
-//       // await connection.execute(
-//       //   `UPDATE prescriptions
-//       //    SET status = 'rejected',
-//       //        rejectionReason = ?,
-//       //        reviewDate = NOW(),
-//       //        isCalculated = 0
-//       //    WHERE id = ?`,
-//       //   [rejectionReason, prescriptionId]
-//       // );
-
-//       await connection.execute(
-//         `UPDATE uploads
-//          SET status = 'rejected',
-//              rejectionReason = ?,
-//              reviewDate = NOW(),
-//              isCalculated = 0
-//          WHERE type = 'prescription'
-//            AND id = ?`,
-//         [rejectionReason, prescriptionId]
-//       );
-
-//       await connection.commit();
-
-//       return res.status(200).json({
-//         success: true,
-//         message: "Prescription rejected successfully",
-//         data: {
-//           prescriptionId,
-//           status: "rejected",
-//           rejectionReason,
-//         },
-//       });
-//     }
-//   } catch (error) {
-//     if (connection) await connection.rollback();
-//     console.error("Error reviewing prescription:", error);
-//     res.status(500).json({
-//       success: false,
-//       message: "Internal server error",
-//       error: error.message,
-//     });
-//   } finally {
-//     if (connection) connection.release();
-//   }
-// };
-
-
 export const getMovesLeaderboard = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
     const {
       division = "team",
-      managerLevel = "flm",
+      managerLevel = "slm",
       limit = 10,
       userRole,
       userId,
@@ -2861,17 +2235,17 @@ export const getMovesLeaderboard = async (req, res) => {
     const startDateStr = startDate ? startDate.toString().trim() : null;
     const endDateStr = endDate ? endDate.toString().trim() : null;
 
-    if (normalizedDivision !== "team") {
+    if (!["team", "player"].includes(normalizedDivision)) {
       return res.status(400).json({
         success: false,
-        message: "Moves leaderboard only supports division='team'. Moves, moves earned, moves lost, and kills metrics are team-level only.",
+        message: "division must be either 'team' or 'player'",
       });
     }
 
-    if (!["flm", "slm", "tlm"].includes(normalizedManagerLevel)) {
+    if (normalizedDivision === "team" && !["slm", "tlm"].includes(normalizedManagerLevel)) {
       return res.status(400).json({
         success: false,
-        message: "managerLevel must be 'flm', 'slm', or 'tlm' when division is 'team'",
+        message: "managerLevel must be 'slm' or 'tlm' when division is 'team'",
       });
     }
 
@@ -2952,25 +2326,25 @@ export const getMovesLeaderboard = async (req, res) => {
     };
 
     if (userId) {
-      if (normalizedUserRole === "flm") {
-        if (normalizedManagerLevel === "flm") {
+      if (normalizedDivision === "player") {
+        if (normalizedUserRole === "flm") {
           highlightId = userId.toString().trim();
-        } else {
+        } else if (normalizedUserRole === "mr") {
+          highlightId = await resolveFlmIdFromMr(userId);
+        }
+      } else {
+        if (normalizedUserRole === "flm") {
           const { slmId, tlmId } = await resolveManagerIdForFlm(userId);
           highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-        }
-      } else if (normalizedUserRole === "mr") {
-        const flmId = await resolveFlmIdFromMr(userId);
-        if (normalizedManagerLevel === "flm") {
-          highlightId = flmId;
-        } else {
+        } else if (normalizedUserRole === "mr") {
+          const flmId = await resolveFlmIdFromMr(userId);
           const { slmId, tlmId } = await resolveManagerIdForFlm(flmId);
           highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
+        } else if (normalizedUserRole === "slm") {
+          highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
+        } else if (normalizedUserRole === "tlm") {
+          highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
         }
-      } else if (normalizedUserRole === "slm") {
-        highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
-      } else if (normalizedUserRole === "tlm") {
-        highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
       }
     }
 
@@ -2979,124 +2353,131 @@ export const getMovesLeaderboard = async (req, res) => {
       ? [filterDatePayload.startDateSql, filterDatePayload.endDateSql]
       : [];
 
-    let teamSql = "";
+    if (normalizedDivision === "team") {
+      let teamSql = "";
 
-    if (filterDatePayload.isActive) {
-      if (normalizedManagerLevel === "flm") {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            fm.flmId AS managerId,
-            COALESCE(fm.flmName, 'Unassigned') AS managerName,
-            COALESCE(f.teamName, NULL) AS teamName,
-            COALESCE(MAX(fm.metricValue), 0) AS totalCurrentDice,
-            COUNT(DISTINCT m.mrId) AS teamMembers
-          FROM flmMetrics fm
-          LEFT JOIN flms f ON fm.flmId = f.flmId
-          LEFT JOIN mrs m ON m.flmId = fm.flmId
-          GROUP BY fm.flmId, fm.flmName, f.teamName
-          ORDER BY totalCurrentDice DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COALESCE(SUM(fm.metricValue), 0) AS totalCurrentDice,
-            COUNT(fm.flmId) AS teamMembers
-          FROM flmMetrics fm
-          LEFT JOIN slms s ON fm.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalCurrentDice DESC, managerName ASC
-          ${limitClause}
-        `;
+      if (filterDatePayload.isActive) {
+        if (normalizedManagerLevel === "tlm") {
+          teamSql = `
+            ${filterCteSql}
+            SELECT
+              s.tlmId AS managerId,
+              COALESCE(t.tlmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(fm.metricValue), 0) AS totalCurrentDice,
+              COUNT(fm.flmId) AS teamMembers
+            FROM flmMetrics fm
+            LEFT JOIN slms s ON fm.slmId = s.slmId
+            LEFT JOIN tlms t ON s.tlmId = t.tlmId
+            GROUP BY s.tlmId, t.tlmName
+            ORDER BY totalCurrentDice DESC, managerName ASC
+            ${limitClause}
+          `;
+        } else {
+          teamSql = `
+            ${filterCteSql}
+            SELECT
+              fm.slmId AS managerId,
+              COALESCE(s.slmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(fm.metricValue), 0) AS totalCurrentDice,
+              COUNT(fm.flmId) AS teamMembers
+            FROM flmMetrics fm
+            LEFT JOIN slms s ON fm.slmId = s.slmId
+            GROUP BY fm.slmId, s.slmName
+            ORDER BY totalCurrentDice DESC, managerName ASC
+            ${limitClause}
+          `;
+        }
       } else {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            fm.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COALESCE(SUM(fm.metricValue), 0) AS totalCurrentDice,
-            COUNT(fm.flmId) AS teamMembers
-          FROM flmMetrics fm
-          LEFT JOIN slms s ON fm.slmId = s.slmId
-          GROUP BY fm.slmId, s.slmName, s.teamName
-          ORDER BY totalCurrentDice DESC, managerName ASC
-          ${limitClause}
-        `;
+        if (normalizedManagerLevel === "tlm") {
+          teamSql = `
+            SELECT
+              s.tlmId AS managerId,
+              COALESCE(t.tlmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(f.currentMoveBalance), 0) AS totalCurrentDice,
+              COUNT(f.flmId) AS teamMembers
+            FROM flms f
+            LEFT JOIN slms s ON f.slmId = s.slmId
+            LEFT JOIN tlms t ON s.tlmId = t.tlmId
+            GROUP BY s.tlmId, t.tlmName
+            ORDER BY totalCurrentDice DESC, managerName ASC
+            ${limitClause}
+          `;
+        } else {
+          teamSql = `
+            SELECT
+              f.slmId AS managerId,
+              COALESCE(s.slmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(f.currentMoveBalance), 0) AS totalCurrentDice,
+              COUNT(f.flmId) AS teamMembers
+            FROM flms f
+            LEFT JOIN slms s ON f.slmId = s.slmId
+            GROUP BY f.slmId, s.slmName
+            ORDER BY totalCurrentDice DESC, managerName ASC
+            ${limitClause}
+          `;
+        }
       }
+      [rows] = await connection.execute(teamSql, filterParams);
     } else {
-      if (normalizedManagerLevel === "flm") {
-        teamSql = `
+      let playerSql = "";
+      if (filterDatePayload.isActive) {
+        playerSql = `
+          ${filterCteSql}
           SELECT
-            f.flmId AS managerId,
-            COALESCE(f.flmName, 'Unassigned') AS managerName,
-            COALESCE(f.teamName, NULL) AS teamName,
-            COALESCE(MAX(f.currentMoveBalance), 0) AS totalCurrentDice,
-            COUNT(DISTINCT m.mrId) AS teamMembers
-          FROM flms f
-          LEFT JOIN mrs m ON m.flmId = f.flmId
-          GROUP BY f.flmId, f.flmName, f.teamName
-          ORDER BY totalCurrentDice DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COALESCE(SUM(f.currentMoveBalance), 0) AS totalCurrentDice,
-            COUNT(f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalCurrentDice DESC, managerName ASC
+            fm.flmId AS playerId,
+            fm.flmName AS playerName,
+            fm.metricValue AS currentDice,
+            fm.slmId
+          FROM flmMetrics fm
+          ORDER BY currentDice DESC, playerName ASC
           ${limitClause}
         `;
       } else {
-        teamSql = `
+        playerSql = `
           SELECT
-            f.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COALESCE(SUM(f.currentMoveBalance), 0) AS totalCurrentDice,
-            COUNT(f.flmId) AS teamMembers
+            f.flmId AS playerId,
+            f.flmName AS playerName,
+            COALESCE(f.currentMoveBalance, 0) AS currentDice,
+            f.slmId
           FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          GROUP BY f.slmId, s.slmName, s.teamName
-          ORDER BY totalCurrentDice DESC, managerName ASC
+          ORDER BY currentDice DESC, playerName ASC
           ${limitClause}
         `;
       }
+      [rows] = await connection.execute(playerSql, filterParams);
     }
-    [rows] = await connection.execute(teamSql, filterParams);
 
-    const data = rows.map((row, index) => ({
-      rank: index + 1,
-      managerId: row.managerId,
-      managerName: row.managerName,
-      teamName: row.teamName || null,
-      totalCurrentDice: Number(row.totalCurrentDice) || 0,
-      teamMembers: Number(row.teamMembers) || 0,
-      metricValue: Number(row.totalCurrentDice) || 0,
-    }));
+    const data =
+      normalizedDivision === "team"
+        ? rows.map((row, index) => ({
+            rank: index + 1,
+            managerId: row.managerId,
+            managerName: row.managerName,
+            totalCurrentDice: Number(row.totalCurrentDice) || 0,
+            teamMembers: Number(row.teamMembers) || 0,
+            metricValue: Number(row.totalCurrentDice) || 0,
+          }))
+        : rows.map((row, index) => ({
+            rank: index + 1,
+            flmId: row.playerId,
+            flmName: row.playerName,
+            currentDice: Number(row.currentDice) || 0,
+            metricValue: Number(row.currentDice) || 0,
+          }));
 
     const highlightedEntry =
       highlightId && data.length > 0
-        ? data.find(entry => entry.managerId && entry.managerId.toString() === highlightId) || null
+        ? data.find(entry =>
+            normalizedDivision === "team"
+              ? entry.managerId && entry.managerId.toString() === highlightId
+              : entry.flmId && entry.flmId.toString() === highlightId
+          ) || null
         : null;
 
     res.status(200).json({
       success: true,
       division: normalizedDivision,
-      managerLevel: normalizedManagerLevel,
+      managerLevel: normalizedDivision === "team" ? normalizedManagerLevel : null,
       limit: numericLimit,
       filterApplied: filterDatePayload.isActive,
       filterRange: filterDatePayload.isActive
@@ -3121,10 +2502,10 @@ export const getMovesLeaderboard = async (req, res) => {
   }
 };
 
-export const getLeaderboardDateFilters = async (req, res) => {
+export const getMovesLeaderboardFilters = async (req, res) => {
   try {
     const requestedStartYear = req.query.startYear ? parseInt(req.query.startYear, 10) : MIN_FILTER_YEAR;
-    const nowYear = getISTDateTime().getUTCFullYear();
+    const nowYear = new Date().getUTCFullYear();
     const defaultEndYear = nowYear + 1;
     const requestedEndYear = req.query.endYear ? parseInt(req.query.endYear, 10) : defaultEndYear;
     const maxSpanYears =
@@ -3171,14 +2552,13 @@ export const getLeaderboardDateFilters = async (req, res) => {
   }
 };
 
-
-export const getMovesEarnedLeaderboard = async (req, res) => {
+export const getPointsLeaderboard = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
     const {
       division = "team",
-      managerLevel = "flm",
+      managerLevel = "slm",
       limit = 10,
       userRole,
       userId,
@@ -3192,17 +2572,17 @@ export const getMovesEarnedLeaderboard = async (req, res) => {
     const startDateStr = startDate ? startDate.toString().trim() : null;
     const endDateStr = endDate ? endDate.toString().trim() : null;
 
-    if (normalizedDivision !== "team") {
+    if (!["team", "player"].includes(normalizedDivision)) {
       return res.status(400).json({
         success: false,
-        message: "Moves earned leaderboard only supports division='team'. Moves, moves earned, moves lost, and kills metrics are team-level only.",
+        message: "division must be either 'team' or 'player'",
       });
     }
 
-    if (!["flm", "slm", "tlm"].includes(normalizedManagerLevel)) {
+    if (normalizedDivision === "team" && !["slm", "tlm"].includes(normalizedManagerLevel)) {
       return res.status(400).json({
         success: false,
-        message: "managerLevel must be 'flm', 'slm', or 'tlm' when division is 'team'",
+        message: "managerLevel must be 'slm' or 'tlm' when division is 'team'",
       });
     }
 
@@ -3283,25 +2663,312 @@ export const getMovesEarnedLeaderboard = async (req, res) => {
     };
 
     if (userId) {
-      if (normalizedUserRole === "flm") {
-        if (normalizedManagerLevel === "flm") {
+      if (normalizedDivision === "player") {
+        if (normalizedUserRole === "flm") {
           highlightId = userId.toString().trim();
-        } else {
+        } else if (normalizedUserRole === "mr") {
+          highlightId = await resolveFlmIdFromMr(userId);
+        }
+      } else {
+        if (normalizedUserRole === "flm") {
           const { slmId, tlmId } = await resolveManagerIdForFlm(userId);
           highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-        }
-      } else if (normalizedUserRole === "mr") {
-        const flmId = await resolveFlmIdFromMr(userId);
-        if (normalizedManagerLevel === "flm") {
-          highlightId = flmId;
-        } else {
+        } else if (normalizedUserRole === "mr") {
+          const flmId = await resolveFlmIdFromMr(userId);
           const { slmId, tlmId } = await resolveManagerIdForFlm(flmId);
           highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
+        } else if (normalizedUserRole === "slm") {
+          highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
+        } else if (normalizedUserRole === "tlm") {
+          highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
         }
-      } else if (normalizedUserRole === "slm") {
-        highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
-      } else if (normalizedUserRole === "tlm") {
-        highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
+      }
+    }
+
+    const filterCteSql = buildPointsFilterCte();
+    const filterParams = filterDatePayload.isActive
+      ? [filterDatePayload.startDateSql, filterDatePayload.endDateSql]
+      : [];
+
+    if (normalizedDivision === "team") {
+      let teamSql = "";
+
+      if (filterDatePayload.isActive) {
+        if (normalizedManagerLevel === "tlm") {
+          teamSql = `
+            ${filterCteSql}
+            SELECT
+              s.tlmId AS managerId,
+              COALESCE(t.tlmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(fpm.metricValue), 0) AS totalPoints,
+              COUNT(fpm.flmId) AS teamMembers
+            FROM flmPointMetrics fpm
+            LEFT JOIN slms s ON fpm.slmId = s.slmId
+            LEFT JOIN tlms t ON s.tlmId = t.tlmId
+            GROUP BY s.tlmId, t.tlmName
+            ORDER BY totalPoints DESC, managerName ASC
+            ${limitClause}
+          `;
+        } else {
+          teamSql = `
+            ${filterCteSql}
+            SELECT
+              fpm.slmId AS managerId,
+              COALESCE(s.slmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(fpm.metricValue), 0) AS totalPoints,
+              COUNT(fpm.flmId) AS teamMembers
+            FROM flmPointMetrics fpm
+            LEFT JOIN slms s ON fpm.slmId = s.slmId
+            GROUP BY fpm.slmId, s.slmName
+            ORDER BY totalPoints DESC, managerName ASC
+            ${limitClause}
+          `;
+        }
+      } else {
+        if (normalizedManagerLevel === "tlm") {
+          teamSql = `
+            SELECT
+              s.tlmId AS managerId,
+              COALESCE(t.tlmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(f.points), 0) AS totalPoints,
+              COUNT(f.flmId) AS teamMembers
+            FROM flms f
+            LEFT JOIN slms s ON f.slmId = s.slmId
+            LEFT JOIN tlms t ON s.tlmId = t.tlmId
+            GROUP BY s.tlmId, t.tlmName
+            ORDER BY totalPoints DESC, managerName ASC
+            ${limitClause}
+          `;
+        } else {
+          teamSql = `
+            SELECT
+              f.slmId AS managerId,
+              COALESCE(s.slmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(f.points), 0) AS totalPoints,
+              COUNT(f.flmId) AS teamMembers
+            FROM flms f
+            LEFT JOIN slms s ON f.slmId = s.slmId
+            GROUP BY f.slmId, s.slmName
+            ORDER BY totalPoints DESC, managerName ASC
+            ${limitClause}
+          `;
+        }
+      }
+      [rows] = await connection.execute(teamSql, filterParams);
+    } else {
+      let playerSql = "";
+      if (filterDatePayload.isActive) {
+        playerSql = `
+          ${filterCteSql}
+          SELECT
+            fpm.flmId AS playerId,
+            fpm.flmName AS playerName,
+            fpm.metricValue AS totalPoints,
+            fpm.slmId
+          FROM flmPointMetrics fpm
+          ORDER BY totalPoints DESC, playerName ASC
+          ${limitClause}
+        `;
+      } else {
+        playerSql = `
+          SELECT
+            f.flmId AS playerId,
+            f.flmName AS playerName,
+            COALESCE(f.points, 0) AS totalPoints,
+            f.slmId
+          FROM flms f
+          ORDER BY totalPoints DESC, playerName ASC
+          ${limitClause}
+        `;
+      }
+      [rows] = await connection.execute(playerSql, filterParams);
+    }
+
+    const data =
+      normalizedDivision === "team"
+        ? rows.map((row, index) => ({
+            rank: index + 1,
+            managerId: row.managerId,
+            managerName: row.managerName,
+            totalPoints: Number(row.totalPoints) || 0,
+            teamMembers: Number(row.teamMembers) || 0,
+            metricValue: Number(row.totalPoints) || 0,
+          }))
+        : rows.map((row, index) => ({
+            rank: index + 1,
+            flmId: row.playerId,
+            flmName: row.playerName,
+            totalPoints: Number(row.totalPoints) || 0,
+            metricValue: Number(row.totalPoints) || 0,
+          }));
+
+    const highlightedEntry =
+      highlightId && data.length > 0
+        ? data.find(entry =>
+            normalizedDivision === "team"
+              ? entry.managerId && entry.managerId.toString() === highlightId
+              : entry.flmId && entry.flmId.toString() === highlightId
+          ) || null
+        : null;
+
+    res.status(200).json({
+      success: true,
+      division: normalizedDivision,
+      managerLevel: normalizedDivision === "team" ? normalizedManagerLevel : null,
+      limit: numericLimit,
+      filterApplied: filterDatePayload.isActive,
+      filterRange: filterDatePayload.isActive
+        ? {
+            startDate: startDateStr,
+            endDate: endDateStr,
+          }
+        : null,
+      total: data.length,
+      highlight: highlightedEntry,
+      data,
+    });
+  } catch (error) {
+    console.error("Error fetching points leaderboard:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const getMovesEarnedLeaderboard = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const {
+      division = "team",
+      managerLevel = "slm",
+      limit = 10,
+      userRole,
+      userId,
+      startDate,
+      endDate,
+    } = req.query;
+
+    const normalizedDivision = division.toString().trim().toLowerCase();
+    const normalizedManagerLevel = managerLevel.toString().trim().toLowerCase();
+    const normalizedUserRole = userRole ? userRole.toString().trim().toLowerCase() : null;
+    const startDateStr = startDate ? startDate.toString().trim() : null;
+    const endDateStr = endDate ? endDate.toString().trim() : null;
+
+    if (!["team", "player"].includes(normalizedDivision)) {
+      return res.status(400).json({
+        success: false,
+        message: "division must be either 'team' or 'player'",
+      });
+    }
+
+    if (normalizedDivision === "team" && !["slm", "tlm"].includes(normalizedManagerLevel)) {
+      return res.status(400).json({
+        success: false,
+        message: "managerLevel must be 'slm' or 'tlm' when division is 'team'",
+      });
+    }
+
+    if ((startDateStr && !endDateStr) || (!startDateStr && endDateStr)) {
+      return res.status(400).json({
+        success: false,
+        message: "Both startDate and endDate are required to enable filtering",
+      });
+    }
+
+    let filterDatePayload = {
+      isActive: false,
+      startDateSql: null,
+      endDateSql: null,
+    };
+
+    if (startDateStr && endDateStr) {
+      const parsedStart = parseIsoDate(startDateStr, false);
+      const parsedEnd = parseIsoDate(endDateStr, true);
+
+      if (!parsedStart || !parsedEnd) {
+        return res.status(400).json({
+          success: false,
+          message: "startDate and endDate must be valid dates (YYYY-MM-DD) not earlier than 2025-01-01",
+        });
+      }
+
+      if (parsedStart > parsedEnd) {
+        return res.status(400).json({
+          success: false,
+          message: "startDate cannot be later than endDate",
+        });
+      }
+
+      filterDatePayload = {
+        isActive: true,
+        startDateSql: formatDateForSql(parsedStart),
+        endDateSql: formatDateForSql(parsedEnd),
+      };
+    }
+
+    let limitClause = "";
+    let numericLimit = null;
+
+    if (limit !== undefined && limit !== null && limit.toString().trim().toLowerCase() !== "all") {
+      numericLimit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 1000));
+      limitClause = ` LIMIT ${numericLimit}`;
+    }
+
+    let rows = [];
+    let highlightId = null;
+
+    const resolveFlmIdFromMr = async mrId => {
+      if (!mrId) return null;
+      const [mrRows] = await connection.execute(
+        `SELECT flmId FROM mrs WHERE mrId = ? LIMIT 1`,
+        [mrId]
+      );
+      if (mrRows.length === 0) return null;
+      return mrRows[0].flmId || null;
+    };
+
+    const resolveManagerIdForFlm = async flmId => {
+      if (!flmId) return { slmId: null, tlmId: null };
+      const [flmRows] = await connection.execute(
+        `SELECT f.slmId, s.tlmId
+         FROM flms f
+         LEFT JOIN slms s ON f.slmId = s.slmId
+         WHERE f.flmId = ?
+         LIMIT 1`,
+        [flmId]
+      );
+      if (flmRows.length === 0) return { slmId: null, tlmId: null };
+      return {
+        slmId: flmRows[0].slmId || null,
+        tlmId: flmRows[0].tlmId || null,
+      };
+    };
+
+    if (userId) {
+      if (normalizedDivision === "player") {
+        if (normalizedUserRole === "flm") {
+          highlightId = userId.toString().trim();
+        } else if (normalizedUserRole === "mr") {
+          highlightId = await resolveFlmIdFromMr(userId);
+        }
+      } else {
+        if (normalizedUserRole === "flm") {
+          const { slmId, tlmId } = await resolveManagerIdForFlm(userId);
+          highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
+        } else if (normalizedUserRole === "mr") {
+          const flmId = await resolveFlmIdFromMr(userId);
+          const { slmId, tlmId } = await resolveManagerIdForFlm(flmId);
+          highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
+        } else if (normalizedUserRole === "slm") {
+          highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
+        } else if (normalizedUserRole === "tlm") {
+          highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
+        }
       }
     }
 
@@ -3310,124 +2977,131 @@ export const getMovesEarnedLeaderboard = async (req, res) => {
       ? [filterDatePayload.startDateSql, filterDatePayload.endDateSql]
       : [];
 
-    let teamSql = "";
+    if (normalizedDivision === "team") {
+      let teamSql = "";
 
-    if (filterDatePayload.isActive) {
-      if (normalizedManagerLevel === "flm") {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            fmem.flmId AS managerId,
-            COALESCE(fmem.flmName, 'Unassigned') AS managerName,
-            COALESCE(f.teamName, NULL) AS teamName,
-            COALESCE(MAX(fmem.metricValue), 0) AS totalMovesEarned,
-            COUNT(DISTINCT m.mrId) AS teamMembers
-          FROM flmMovesEarnedMetrics fmem
-          LEFT JOIN flms f ON fmem.flmId = f.flmId
-          LEFT JOIN mrs m ON m.flmId = fmem.flmId
-          GROUP BY fmem.flmId, fmem.flmName, f.teamName
-          ORDER BY totalMovesEarned DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COALESCE(SUM(fmem.metricValue), 0) AS totalMovesEarned,
-            COUNT(fmem.flmId) AS teamMembers
-          FROM flmMovesEarnedMetrics fmem
-          LEFT JOIN slms s ON fmem.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalMovesEarned DESC, managerName ASC
-          ${limitClause}
-        `;
+      if (filterDatePayload.isActive) {
+        if (normalizedManagerLevel === "tlm") {
+          teamSql = `
+            ${filterCteSql}
+            SELECT
+              s.tlmId AS managerId,
+              COALESCE(t.tlmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(fmem.metricValue), 0) AS totalMovesEarned,
+              COUNT(fmem.flmId) AS teamMembers
+            FROM flmMovesEarnedMetrics fmem
+            LEFT JOIN slms s ON fmem.slmId = s.slmId
+            LEFT JOIN tlms t ON s.tlmId = t.tlmId
+            GROUP BY s.tlmId, t.tlmName
+            ORDER BY totalMovesEarned DESC, managerName ASC
+            ${limitClause}
+          `;
+        } else {
+          teamSql = `
+            ${filterCteSql}
+            SELECT
+              fmem.slmId AS managerId,
+              COALESCE(s.slmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(fmem.metricValue), 0) AS totalMovesEarned,
+              COUNT(fmem.flmId) AS teamMembers
+            FROM flmMovesEarnedMetrics fmem
+            LEFT JOIN slms s ON fmem.slmId = s.slmId
+            GROUP BY fmem.slmId, s.slmName
+            ORDER BY totalMovesEarned DESC, managerName ASC
+            ${limitClause}
+          `;
+        }
       } else {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            fmem.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COALESCE(SUM(fmem.metricValue), 0) AS totalMovesEarned,
-            COUNT(fmem.flmId) AS teamMembers
-          FROM flmMovesEarnedMetrics fmem
-          LEFT JOIN slms s ON fmem.slmId = s.slmId
-          GROUP BY fmem.slmId, s.slmName, s.teamName
-          ORDER BY totalMovesEarned DESC, managerName ASC
-          ${limitClause}
-        `;
+        if (normalizedManagerLevel === "tlm") {
+          teamSql = `
+            SELECT
+              s.tlmId AS managerId,
+              COALESCE(t.tlmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(f.moves), 0) AS totalMovesEarned,
+              COUNT(f.flmId) AS teamMembers
+            FROM flms f
+            LEFT JOIN slms s ON f.slmId = s.slmId
+            LEFT JOIN tlms t ON s.tlmId = t.tlmId
+            GROUP BY s.tlmId, t.tlmName
+            ORDER BY totalMovesEarned DESC, managerName ASC
+            ${limitClause}
+          `;
+        } else {
+          teamSql = `
+            SELECT
+              f.slmId AS managerId,
+              COALESCE(s.slmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(f.moves), 0) AS totalMovesEarned,
+              COUNT(f.flmId) AS teamMembers
+            FROM flms f
+            LEFT JOIN slms s ON f.slmId = s.slmId
+            GROUP BY f.slmId, s.slmName
+            ORDER BY totalMovesEarned DESC, managerName ASC
+            ${limitClause}
+          `;
+        }
       }
+      [rows] = await connection.execute(teamSql, filterParams);
     } else {
-      if (normalizedManagerLevel === "flm") {
-        teamSql = `
+      let playerSql = "";
+      if (filterDatePayload.isActive) {
+        playerSql = `
+          ${filterCteSql}
           SELECT
-            f.flmId AS managerId,
-            COALESCE(f.flmName, 'Unassigned') AS managerName,
-            COALESCE(f.teamName, NULL) AS teamName,
-            COALESCE(MAX(f.moves), 0) AS totalMovesEarned,
-            COUNT(DISTINCT m.mrId) AS teamMembers
-          FROM flms f
-          LEFT JOIN mrs m ON m.flmId = f.flmId
-          GROUP BY f.flmId, f.flmName, f.teamName
-          ORDER BY totalMovesEarned DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COALESCE(SUM(f.moves), 0) AS totalMovesEarned,
-            COUNT(f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalMovesEarned DESC, managerName ASC
+            fmem.flmId AS playerId,
+            fmem.flmName AS playerName,
+            fmem.metricValue AS totalMovesEarned,
+            fmem.slmId
+          FROM flmMovesEarnedMetrics fmem
+          ORDER BY totalMovesEarned DESC, playerName ASC
           ${limitClause}
         `;
       } else {
-        teamSql = `
+        playerSql = `
           SELECT
-            f.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COALESCE(SUM(f.moves), 0) AS totalMovesEarned,
-            COUNT(f.flmId) AS teamMembers
+            f.flmId AS playerId,
+            f.flmName AS playerName,
+            COALESCE(f.moves, 0) AS totalMovesEarned,
+            f.slmId
           FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          GROUP BY f.slmId, s.slmName, s.teamName
-          ORDER BY totalMovesEarned DESC, managerName ASC
+          ORDER BY totalMovesEarned DESC, playerName ASC
           ${limitClause}
         `;
       }
+      [rows] = await connection.execute(playerSql, filterParams);
     }
-    [rows] = await connection.execute(teamSql, filterParams);
 
-    const data = rows.map((row, index) => ({
-      rank: index + 1,
-      managerId: row.managerId,
-      managerName: row.managerName,
-      teamName: row.teamName || null,
-      totalMovesEarned: Number(row.totalMovesEarned) || 0,
-      teamMembers: Number(row.teamMembers) || 0,
-      metricValue: Number(row.totalMovesEarned) || 0,
-    }));
+    const data =
+      normalizedDivision === "team"
+        ? rows.map((row, index) => ({
+            rank: index + 1,
+            managerId: row.managerId,
+            managerName: row.managerName,
+            totalMovesEarned: Number(row.totalMovesEarned) || 0,
+            teamMembers: Number(row.teamMembers) || 0,
+            metricValue: Number(row.totalMovesEarned) || 0,
+          }))
+        : rows.map((row, index) => ({
+            rank: index + 1,
+            flmId: row.playerId,
+            flmName: row.playerName,
+            totalMovesEarned: Number(row.totalMovesEarned) || 0,
+            metricValue: Number(row.totalMovesEarned) || 0,
+          }));
 
     const highlightedEntry =
       highlightId && data.length > 0
-        ? data.find(entry => entry.managerId && entry.managerId.toString() === highlightId) || null
+        ? data.find(entry =>
+            normalizedDivision === "team"
+              ? entry.managerId && entry.managerId.toString() === highlightId
+              : entry.flmId && entry.flmId.toString() === highlightId
+          ) || null
         : null;
 
     res.status(200).json({
       success: true,
       division: normalizedDivision,
-      managerLevel: normalizedManagerLevel,
+      managerLevel: normalizedDivision === "team" ? normalizedManagerLevel : null,
       limit: numericLimit,
       filterApplied: filterDatePayload.isActive,
       filterRange: filterDatePayload.isActive
@@ -3458,7 +3132,7 @@ export const getKillsLeaderboard = async (req, res) => {
   try {
     const {
       division = "team",
-      managerLevel = "flm",
+      managerLevel = "slm",
       limit = 10,
       userRole,
       userId,
@@ -3472,17 +3146,17 @@ export const getKillsLeaderboard = async (req, res) => {
     const startDateStr = startDate ? startDate.toString().trim() : null;
     const endDateStr = endDate ? endDate.toString().trim() : null;
 
-    if (normalizedDivision !== "team") {
+    if (!["team", "player"].includes(normalizedDivision)) {
       return res.status(400).json({
         success: false,
-        message: "Kills leaderboard only supports division='team'. Moves, moves earned, moves lost, and kills metrics are team-level only.",
+        message: "division must be either 'team' or 'player'",
       });
     }
 
-    if (!["flm", "slm", "tlm"].includes(normalizedManagerLevel)) {
+    if (normalizedDivision === "team" && !["slm", "tlm"].includes(normalizedManagerLevel)) {
       return res.status(400).json({
         success: false,
-        message: "managerLevel must be 'flm', 'slm', or 'tlm' when division is 'team'",
+        message: "managerLevel must be 'slm' or 'tlm' when division is 'team'",
       });
     }
 
@@ -3563,25 +3237,25 @@ export const getKillsLeaderboard = async (req, res) => {
     };
 
     if (userId) {
-      if (normalizedUserRole === "flm") {
-        if (normalizedManagerLevel === "flm") {
+      if (normalizedDivision === "player") {
+        if (normalizedUserRole === "flm") {
           highlightId = userId.toString().trim();
-        } else {
+        } else if (normalizedUserRole === "mr") {
+          highlightId = await resolveFlmIdFromMr(userId);
+        }
+      } else {
+        if (normalizedUserRole === "flm") {
           const { slmId, tlmId } = await resolveManagerIdForFlm(userId);
           highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-        }
-      } else if (normalizedUserRole === "mr") {
-        const flmId = await resolveFlmIdFromMr(userId);
-        if (normalizedManagerLevel === "flm") {
-          highlightId = flmId;
-        } else {
+        } else if (normalizedUserRole === "mr") {
+          const flmId = await resolveFlmIdFromMr(userId);
           const { slmId, tlmId } = await resolveManagerIdForFlm(flmId);
           highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
+        } else if (normalizedUserRole === "slm") {
+          highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
+        } else if (normalizedUserRole === "tlm") {
+          highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
         }
-      } else if (normalizedUserRole === "slm") {
-        highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
-      } else if (normalizedUserRole === "tlm") {
-        highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
       }
     }
 
@@ -3590,124 +3264,131 @@ export const getKillsLeaderboard = async (req, res) => {
       ? [filterDatePayload.startDateSql, filterDatePayload.endDateSql]
       : [];
 
-    let teamSql = "";
+    if (normalizedDivision === "team") {
+      let teamSql = "";
 
-    if (filterDatePayload.isActive) {
-      if (normalizedManagerLevel === "flm") {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            fkm.flmId AS managerId,
-            COALESCE(fkm.flmName, 'Unassigned') AS managerName,
-            COALESCE(f.teamName, NULL) AS teamName,
-            COALESCE(MAX(fkm.metricValue), 0) AS totalKills,
-            COUNT(DISTINCT m.mrId) AS teamMembers
-          FROM flmKillMetrics fkm
-          LEFT JOIN flms f ON fkm.flmId = f.flmId
-          LEFT JOIN mrs m ON m.flmId = fkm.flmId
-          GROUP BY fkm.flmId, fkm.flmName, f.teamName
-          ORDER BY totalKills DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COALESCE(SUM(fkm.metricValue), 0) AS totalKills,
-            COUNT(fkm.flmId) AS teamMembers
-          FROM flmKillMetrics fkm
-          LEFT JOIN slms s ON fkm.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalKills DESC, managerName ASC
-          ${limitClause}
-        `;
+      if (filterDatePayload.isActive) {
+        if (normalizedManagerLevel === "tlm") {
+          teamSql = `
+            ${filterCteSql}
+            SELECT
+              s.tlmId AS managerId,
+              COALESCE(t.tlmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(fkm.metricValue), 0) AS totalKills,
+              COUNT(fkm.flmId) AS teamMembers
+            FROM flmKillMetrics fkm
+            LEFT JOIN slms s ON fkm.slmId = s.slmId
+            LEFT JOIN tlms t ON s.tlmId = t.tlmId
+            GROUP BY s.tlmId, t.tlmName
+            ORDER BY totalKills DESC, managerName ASC
+            ${limitClause}
+          `;
+        } else {
+          teamSql = `
+            ${filterCteSql}
+            SELECT
+              fkm.slmId AS managerId,
+              COALESCE(s.slmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(fkm.metricValue), 0) AS totalKills,
+              COUNT(fkm.flmId) AS teamMembers
+            FROM flmKillMetrics fkm
+            LEFT JOIN slms s ON fkm.slmId = s.slmId
+            GROUP BY fkm.slmId, s.slmName
+            ORDER BY totalKills DESC, managerName ASC
+            ${limitClause}
+          `;
+        }
       } else {
-        teamSql = `
-          ${filterCteSql}
-          SELECT
-            fkm.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COALESCE(SUM(fkm.metricValue), 0) AS totalKills,
-            COUNT(fkm.flmId) AS teamMembers
-          FROM flmKillMetrics fkm
-          LEFT JOIN slms s ON fkm.slmId = s.slmId
-          GROUP BY fkm.slmId, s.slmName, s.teamName
-          ORDER BY totalKills DESC, managerName ASC
-          ${limitClause}
-        `;
+        if (normalizedManagerLevel === "tlm") {
+          teamSql = `
+            SELECT
+              s.tlmId AS managerId,
+              COALESCE(t.tlmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(f.kills), 0) AS totalKills,
+              COUNT(f.flmId) AS teamMembers
+            FROM flms f
+            LEFT JOIN slms s ON f.slmId = s.slmId
+            LEFT JOIN tlms t ON s.tlmId = t.tlmId
+            GROUP BY s.tlmId, t.tlmName
+            ORDER BY totalKills DESC, managerName ASC
+            ${limitClause}
+          `;
+        } else {
+          teamSql = `
+            SELECT
+              f.slmId AS managerId,
+              COALESCE(s.slmName, 'Unassigned') AS managerName,
+              COALESCE(SUM(f.kills), 0) AS totalKills,
+              COUNT(f.flmId) AS teamMembers
+            FROM flms f
+            LEFT JOIN slms s ON f.slmId = s.slmId
+            GROUP BY f.slmId, s.slmName
+            ORDER BY totalKills DESC, managerName ASC
+            ${limitClause}
+          `;
+        }
       }
+      [rows] = await connection.execute(teamSql, filterParams);
     } else {
-      if (normalizedManagerLevel === "flm") {
-        teamSql = `
+      let playerSql = "";
+      if (filterDatePayload.isActive) {
+        playerSql = `
+          ${filterCteSql}
           SELECT
-            f.flmId AS managerId,
-            COALESCE(f.flmName, 'Unassigned') AS managerName,
-            COALESCE(f.teamName, NULL) AS teamName,
-            COALESCE(MAX(f.kills), 0) AS totalKills,
-            COUNT(DISTINCT m.mrId) AS teamMembers
-          FROM flms f
-          LEFT JOIN mrs m ON m.flmId = f.flmId
-          GROUP BY f.flmId, f.flmName, f.teamName
-          ORDER BY totalKills DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COALESCE(SUM(f.kills), 0) AS totalKills,
-            COUNT(f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalKills DESC, managerName ASC
+            fkm.flmId AS playerId,
+            fkm.flmName AS playerName,
+            fkm.metricValue AS totalKills,
+            fkm.slmId
+          FROM flmKillMetrics fkm
+          ORDER BY totalKills DESC, playerName ASC
           ${limitClause}
         `;
       } else {
-        teamSql = `
+        playerSql = `
           SELECT
-            f.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COALESCE(SUM(f.kills), 0) AS totalKills,
-            COUNT(f.flmId) AS teamMembers
+            f.flmId AS playerId,
+            f.flmName AS playerName,
+            COALESCE(f.kills, 0) AS totalKills,
+            f.slmId
           FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          GROUP BY f.slmId, s.slmName, s.teamName
-          ORDER BY totalKills DESC, managerName ASC
+          ORDER BY totalKills DESC, playerName ASC
           ${limitClause}
         `;
       }
+      [rows] = await connection.execute(playerSql, filterParams);
     }
-    [rows] = await connection.execute(teamSql, filterParams);
 
-    const data = rows.map((row, index) => ({
-      rank: index + 1,
-      managerId: row.managerId,
-      managerName: row.managerName,
-      teamName: row.teamName || null,
-      totalKills: Number(row.totalKills) || 0,
-      teamMembers: Number(row.teamMembers) || 0,
-      metricValue: Number(row.totalKills) || 0,
-    }));
+    const data =
+      normalizedDivision === "team"
+        ? rows.map((row, index) => ({
+            rank: index + 1,
+            managerId: row.managerId,
+            managerName: row.managerName,
+            totalKills: Number(row.totalKills) || 0,
+            teamMembers: Number(row.teamMembers) || 0,
+            metricValue: Number(row.totalKills) || 0,
+          }))
+        : rows.map((row, index) => ({
+            rank: index + 1,
+            flmId: row.playerId,
+            flmName: row.playerName,
+            totalKills: Number(row.totalKills) || 0,
+            metricValue: Number(row.totalKills) || 0,
+          }));
 
     const highlightedEntry =
       highlightId && data.length > 0
-        ? data.find(entry => entry.managerId && entry.managerId.toString() === highlightId) || null
+        ? data.find(entry =>
+            normalizedDivision === "team"
+              ? entry.managerId && entry.managerId.toString() === highlightId
+              : entry.flmId && entry.flmId.toString() === highlightId
+          ) || null
         : null;
 
     res.status(200).json({
       success: true,
       division: normalizedDivision,
-      managerLevel: normalizedManagerLevel,
+      managerLevel: normalizedDivision === "team" ? normalizedManagerLevel : null,
       limit: numericLimit,
       filterApplied: filterDatePayload.isActive,
       filterRange: filterDatePayload.isActive
@@ -3738,7 +3419,7 @@ export const getMovesLostLeaderboard = async (req, res) => {
   try {
     const {
       division = "team",
-      managerLevel = "flm",
+      managerLevel = "slm",
       limit = 10,
       userRole,
       userId,
@@ -3752,17 +3433,17 @@ export const getMovesLostLeaderboard = async (req, res) => {
     const startDateStr = startDate ? startDate.toString().trim() : null;
     const endDateStr = endDate ? endDate.toString().trim() : null;
 
-    if (normalizedDivision !== "team") {
+    if (!["team", "player"].includes(normalizedDivision)) {
       return res.status(400).json({
         success: false,
-        message: "Moves lost leaderboard only supports division='team'. Moves, moves earned, moves lost, and kills metrics are team-level only.",
+        message: "division must be either 'team' or 'player'",
       });
     }
 
-    if (!["flm", "slm", "tlm"].includes(normalizedManagerLevel)) {
+    if (normalizedDivision === "team" && !["slm", "tlm"].includes(normalizedManagerLevel)) {
       return res.status(400).json({
         success: false,
-        message: "managerLevel must be 'flm', 'slm', or 'tlm' when division is 'team'",
+        message: "managerLevel must be 'slm' or 'tlm' when division is 'team'",
       });
     }
 
@@ -3843,25 +3524,25 @@ export const getMovesLostLeaderboard = async (req, res) => {
     };
 
     if (userId) {
-      if (normalizedUserRole === "flm") {
-        if (normalizedManagerLevel === "flm") {
+      if (normalizedDivision === "player") {
+        if (normalizedUserRole === "flm") {
           highlightId = userId.toString().trim();
-        } else {
+        } else if (normalizedUserRole === "mr") {
+          highlightId = await resolveFlmIdFromMr(userId);
+        }
+      } else {
+        if (normalizedUserRole === "flm") {
           const { slmId, tlmId } = await resolveManagerIdForFlm(userId);
           highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-        }
-      } else if (normalizedUserRole === "mr") {
-        const flmId = await resolveFlmIdFromMr(userId);
-        if (normalizedManagerLevel === "flm") {
-          highlightId = flmId;
-        } else {
+        } else if (normalizedUserRole === "mr") {
+          const flmId = await resolveFlmIdFromMr(userId);
           const { slmId, tlmId } = await resolveManagerIdForFlm(flmId);
           highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
+        } else if (normalizedUserRole === "slm") {
+          highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
+        } else if (normalizedUserRole === "tlm") {
+          highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
         }
-      } else if (normalizedUserRole === "slm") {
-        highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
-      } else if (normalizedUserRole === "tlm") {
-        highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
       }
     }
 
@@ -3870,77 +3551,86 @@ export const getMovesLostLeaderboard = async (req, res) => {
       ? [filterDatePayload.startDateSql, filterDatePayload.endDateSql]
       : [];
 
-    let teamSql = "";
+    if (normalizedDivision === "team") {
+      let teamSql = "";
 
-    if (normalizedManagerLevel === "flm") {
-      teamSql = `
-        ${movesLostCteSql}
-        SELECT
-          fmlm.flmId AS managerId,
-          COALESCE(fmlm.flmName, 'Unassigned') AS managerName,
-          COALESCE(f.teamName, NULL) AS teamName,
-          COALESCE(MAX(fmlm.metricValue), 0) AS totalMovesLost,
-          COUNT(DISTINCT m.mrId) AS teamMembers
-        FROM flmMovesLostMetrics fmlm
-        LEFT JOIN flms f ON fmlm.flmId = f.flmId
-        LEFT JOIN mrs m ON m.flmId = fmlm.flmId
-        GROUP BY fmlm.flmId, fmlm.flmName, f.teamName
-        ORDER BY totalMovesLost DESC, managerName ASC
-        ${limitClause}
-      `;
-    } else if (normalizedManagerLevel === "tlm") {
-      teamSql = `
-        ${movesLostCteSql}
-        SELECT
-          s.tlmId AS managerId,
-          COALESCE(t.tlmName, 'Unassigned') AS managerName,
-          COALESCE(t.teamName, NULL) AS teamName,
-          COALESCE(SUM(fmlm.metricValue), 0) AS totalMovesLost,
-          COUNT(fmlm.flmId) AS teamMembers
-        FROM flmMovesLostMetrics fmlm
-        LEFT JOIN slms s ON fmlm.slmId = s.slmId
-        LEFT JOIN tlms t ON s.tlmId = t.tlmId
-        GROUP BY s.tlmId, t.tlmName, t.teamName
-        ORDER BY totalMovesLost DESC, managerName ASC
-        ${limitClause}
-      `;
+      if (normalizedManagerLevel === "tlm") {
+        teamSql = `
+          ${movesLostCteSql}
+          SELECT
+            s.tlmId AS managerId,
+            COALESCE(t.tlmName, 'Unassigned') AS managerName,
+            COALESCE(SUM(fmlm.metricValue), 0) AS totalMovesLost,
+            COUNT(fmlm.flmId) AS teamMembers
+          FROM flmMovesLostMetrics fmlm
+          LEFT JOIN slms s ON fmlm.slmId = s.slmId
+          LEFT JOIN tlms t ON s.tlmId = t.tlmId
+          GROUP BY s.tlmId, t.tlmName
+          ORDER BY totalMovesLost DESC, managerName ASC
+          ${limitClause}
+        `;
+      } else {
+        teamSql = `
+          ${movesLostCteSql}
+          SELECT
+            fmlm.slmId AS managerId,
+            COALESCE(s.slmName, 'Unassigned') AS managerName,
+            COALESCE(SUM(fmlm.metricValue), 0) AS totalMovesLost,
+            COUNT(fmlm.flmId) AS teamMembers
+          FROM flmMovesLostMetrics fmlm
+          LEFT JOIN slms s ON fmlm.slmId = s.slmId
+          GROUP BY fmlm.slmId, s.slmName
+          ORDER BY totalMovesLost DESC, managerName ASC
+          ${limitClause}
+        `;
+      }
+      [rows] = await connection.execute(teamSql, filterParams);
     } else {
-      teamSql = `
+      const playerSql = `
         ${movesLostCteSql}
         SELECT
-          fmlm.slmId AS managerId,
-          COALESCE(s.slmName, 'Unassigned') AS managerName,
-          COALESCE(s.teamName, NULL) AS teamName,
-          COALESCE(SUM(fmlm.metricValue), 0) AS totalMovesLost,
-          COUNT(fmlm.flmId) AS teamMembers
+          fmlm.flmId AS playerId,
+          fmlm.flmName AS playerName,
+          fmlm.metricValue AS totalMovesLost,
+          fmlm.slmId
         FROM flmMovesLostMetrics fmlm
-        LEFT JOIN slms s ON fmlm.slmId = s.slmId
-        GROUP BY fmlm.slmId, s.slmName, s.teamName
-        ORDER BY totalMovesLost DESC, managerName ASC
+        ORDER BY totalMovesLost DESC, playerName ASC
         ${limitClause}
       `;
+      [rows] = await connection.execute(playerSql, filterParams);
     }
-    [rows] = await connection.execute(teamSql, filterParams);
 
-    const data = rows.map((row, index) => ({
-      rank: index + 1,
-      managerId: row.managerId,
-      managerName: row.managerName,
-      teamName: row.teamName || null,
-      totalMovesLost: Number(row.totalMovesLost) || 0,
-      teamMembers: Number(row.teamMembers) || 0,
-      metricValue: Number(row.totalMovesLost) || 0,
-    }));
+    const data =
+      normalizedDivision === "team"
+        ? rows.map((row, index) => ({
+            rank: index + 1,
+            managerId: row.managerId,
+            managerName: row.managerName,
+            totalMovesLost: Number(row.totalMovesLost) || 0,
+            teamMembers: Number(row.teamMembers) || 0,
+            metricValue: Number(row.totalMovesLost) || 0,
+          }))
+        : rows.map((row, index) => ({
+            rank: index + 1,
+            flmId: row.playerId,
+            flmName: row.playerName,
+            totalMovesLost: Number(row.totalMovesLost) || 0,
+            metricValue: Number(row.totalMovesLost) || 0,
+          }));
 
     const highlightedEntry =
       highlightId && data.length > 0
-        ? data.find(entry => entry.managerId && entry.managerId.toString() === highlightId) || null
+        ? data.find(entry =>
+            normalizedDivision === "team"
+              ? entry.managerId && entry.managerId.toString() === highlightId
+              : entry.flmId && entry.flmId.toString() === highlightId
+          ) || null
         : null;
 
     res.status(200).json({
       success: true,
       division: normalizedDivision,
-      managerLevel: normalizedManagerLevel,
+      managerLevel: normalizedDivision === "team" ? normalizedManagerLevel : null,
       limit: numericLimit,
       filterApplied: filterDatePayload.isActive,
       filterRange: filterDatePayload.isActive
@@ -3981,903 +3671,21 @@ const parseDateRange = ({ startDate, endDate }) => {
     throw new Error(`Date range cannot exceed ${MAX_LEADERBOARD_RANGE_DAYS} days`);
   }
 
+  const toMySqlDateTime = date => {
+    const pad = value => value.toString().padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
+      date.getHours()
+    )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  };
+
   return {
     start,
     end,
-    startSql: formatISTDateTimeForSQL(start),
-    endSql: formatISTDateTimeForSQL(end),
+    startSql: toMySqlDateTime(start),
+    endSql: toMySqlDateTime(end),
   };
 };
 
-export const getMrPointsLeaderboard = async (req, res) => {
-  const connection = await db.getConnection();
-
-  try {
-    const {
-      limit = 10,
-      userId,
-      userRole,
-      startDate,
-      endDate,
-      brandId,
-      brandName,
-    } = req.query;
-
-    const startDateStr = startDate ? startDate.toString().trim() : null;
-    const endDateStr = endDate ? endDate.toString().trim() : null;
-    const brandIdStr = brandId ? brandId.toString().trim() : null;
-    const brandNameStr = brandName ? brandName.toString().trim() : null;
-    const normalizedUserRole = userRole ? userRole.toString().trim().toLowerCase() : null;
-
-    if ((startDateStr && !endDateStr) || (!startDateStr && endDateStr)) {
-      return res.status(400).json({
-        success: false,
-        message: "Both startDate and endDate are required to enable date filtering",
-      });
-    }
-
-    let filterDatePayload = {
-      isActive: false,
-      startDateSql: null,
-      endDateSql: null,
-    };
-
-    if (startDateStr && endDateStr) {
-      const parsedStart = parseIsoDate(startDateStr, false);
-      const parsedEnd = parseIsoDate(endDateStr, true);
-
-      if (!parsedStart || !parsedEnd) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate and endDate must be valid dates (YYYY-MM-DD) not earlier than 2025-01-01",
-        });
-      }
-
-      if (parsedStart > parsedEnd) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate cannot be later than endDate",
-        });
-      }
-
-      filterDatePayload = {
-        isActive: true,
-        startDateSql: formatDateForSql(parsedStart),
-        endDateSql: formatDateForSql(parsedEnd),
-      };
-    }
-
-    let limitClause = "";
-    let numericLimit = null;
-
-    if (limit !== undefined && limit !== null && limit.toString().trim().toLowerCase() !== "all") {
-      numericLimit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 1000));
-      limitClause = ` LIMIT ${numericLimit}`;
-    }
-
-    const resolveFlmIdFromMr = async mrId => {
-      if (!mrId) return null;
-      const [mrRows] = await connection.execute(
-        `SELECT flmId FROM mrs WHERE mrId = ? LIMIT 1`,
-        [mrId]
-      );
-      if (mrRows.length === 0) return null;
-      return mrRows[0].flmId || null;
-    };
-
-    let highlightMrIds = [];
-    let highlightFlmId = null;
-
-    if (userId) {
-      if (normalizedUserRole === "flm") {
-        highlightFlmId = userId.toString().trim();
-        const [mrRows] = await connection.execute(
-          `SELECT mrId FROM mrs WHERE flmId = ?`,
-          [highlightFlmId]
-        );
-        highlightMrIds = mrRows.map(row => row.mrId);
-      } else if (normalizedUserRole === "mr") {
-        highlightMrIds = [userId.toString().trim()];
-      }
-    }
-
-    const brandFilter = brandIdStr ? { brandId: brandIdStr } : brandNameStr ? { brandName: brandNameStr } : null;
-    const brandFilterActive = !!brandFilter;
-    
-    // If brand filter is active, we need to query uploads table even without date filter
-    const needsUploadsQuery = filterDatePayload.isActive || brandFilterActive;
-    
-    let playerSql = "";
-    let filterParams = [];
-    
-    if (needsUploadsQuery) {
-      let brandWhereClause = "";
-      if (brandFilter && brandFilter.brandId) {
-        brandWhereClause = " AND p.brandId = ?";
-      } else if (brandFilter && brandFilter.brandName) {
-        brandWhereClause = " AND p.brandName = ?";
-      }
-      
-      const dateWhereClause = filterDatePayload.isActive ? "AND p.reviewDate BETWEEN ? AND ?" : "";
-      
-      // Always include all upload types (prescription, pob, camp)
-      const typeWhereClause = "AND p.type IN ('prescription', 'pob', 'camp')";
-      
-      const mrFilterCteSql = `
-        WITH filteredMrPoints AS (
-          SELECT
-            m.mrId,
-            SUM(p.points) AS totalPoints
-          FROM uploads p
-          JOIN mrs m ON p.mrId = m.mrId
-          WHERE p.status = 'approved'
-            AND p.isCalculated = 1
-            ${typeWhereClause}
-            ${dateWhereClause}
-            ${brandWhereClause}
-          GROUP BY m.mrId
-        ),
-        mrPointMetrics AS (
-          SELECT
-            m.mrId,
-            COALESCE(m.mrName, 'Unassigned') AS mrName,
-            COALESCE(m.teamName, NULL) AS teamName,
-            COALESCE(fmp.totalPoints, 0) AS metricValue
-          FROM mrs m
-          LEFT JOIN filteredMrPoints fmp ON fmp.mrId = m.mrId
-        )
-      `;
-      playerSql = `
-        ${mrFilterCteSql}
-        SELECT
-          mpm.mrId AS playerId,
-          mpm.mrName AS playerName,
-          mpm.teamName AS teamName,
-          mpm.metricValue AS totalPoints
-        FROM mrPointMetrics mpm
-        ORDER BY totalPoints DESC, playerName ASC
-        ${limitClause}
-      `;
-      
-      // Build filter parameters
-      if (filterDatePayload.isActive) {
-        filterParams.push(filterDatePayload.startDateSql, filterDatePayload.endDateSql);
-      }
-      
-      // Add brand filter parameter if present
-      if (brandFilter) {
-        if (brandFilter.brandId) {
-          filterParams.push(brandFilter.brandId);
-        } else if (brandFilter.brandName) {
-          filterParams.push(brandFilter.brandName);
-        }
-      }
-    } else {
-      playerSql = `
-      SELECT
-        m.mrId AS playerId,
-        COALESCE(m.mrName, 'Unassigned') AS playerName,
-          COALESCE(m.teamName, NULL) AS teamName,
-          COALESCE(m.points, 0) AS totalPoints
-      FROM mrs m
-      ORDER BY totalPoints DESC, playerName ASC
-      ${limitClause}
-    `;
-    }
-
-    const [rows] = await connection.execute(playerSql, filterParams);
-
-    const data = rows.map((row, index) => {
-      const mrId = row.playerId;
-      const isHighlighted = highlightMrIds.length > 0 && highlightMrIds.includes(mrId);
-      return {
-      rank: index + 1,
-        mrId: mrId,
-      mrName: row.playerName,
-        teamName: row.teamName || null,
-      totalPoints: Number(row.totalPoints) || 0,
-      metricValue: Number(row.totalPoints) || 0,
-        isHighlighted: isHighlighted,
-      };
-    });
-
-    let highlightedEntry = null;
-    if (highlightMrIds.length > 0 && data.length > 0) {
-      const highlightedEntries = data.filter(entry => entry.isHighlighted);
-      if (highlightedEntries.length > 0) {
-        if (normalizedUserRole === "flm" && highlightFlmId) {
-          highlightedEntry = highlightedEntries.reduce((best, current) => 
-            current.rank < best.rank ? current : best
-          );
-        } else if (normalizedUserRole === "mr") {
-          highlightedEntry = highlightedEntries[0];
-        } else {
-          highlightedEntry = highlightedEntries.length === 1 ? highlightedEntries[0] : highlightedEntries;
-        }
-      }
-    }
-
-    res.status(200).json({
-      success: true,
-      division: "player",
-      managerLevel: null,
-      limit: numericLimit,
-      filterApplied: filterDatePayload.isActive || !!brandFilter,
-      filterRange: filterDatePayload.isActive
-        ? {
-            startDate: startDateStr,
-            endDate: endDateStr,
-          }
-        : null,
-      brandFilter: brandFilter || null,
-      total: data.length,
-      highlight: highlightedEntry,
-      data,
-    });
-  } catch (error) {
-    console.error("Error fetching MR points leaderboard:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  } finally {
-    if (connection) connection.release();
-  }
-};
-
-export const getDiceRollBalanceLeaderboard = async (req, res) => {
-  const connection = await db.getConnection();
-
-  try {
-    const {
-      division = "player",
-      managerLevel = "flm",
-      limit = 10,
-      userRole,
-      userId,
-      startDate,
-      endDate,
-    } = req.query;
-
-    const normalizedDivision = division.toString().trim().toLowerCase();
-    const normalizedManagerLevel = managerLevel.toString().trim().toLowerCase();
-    const normalizedUserRole = userRole ? userRole.toString().trim().toLowerCase() : null;
-    const startDateStr = startDate ? startDate.toString().trim() : null;
-    const endDateStr = endDate ? endDate.toString().trim() : null;
-
-    if (!["team", "player"].includes(normalizedDivision)) {
-      return res.status(400).json({
-        success: false,
-        message: "division must be either 'team' or 'player'",
-      });
-    }
-
-    if (normalizedDivision === "team" && !["flm", "slm", "tlm"].includes(normalizedManagerLevel)) {
-      return res.status(400).json({
-        success: false,
-        message: "managerLevel must be 'flm', 'slm' or 'tlm' when division is 'team'",
-      });
-    }
-
-    if ((startDateStr && !endDateStr) || (!startDateStr && endDateStr)) {
-      return res.status(400).json({
-        success: false,
-        message: "Both startDate and endDate are required to enable filtering",
-      });
-    }
-
-    let filterDatePayload = {
-      isActive: false,
-      startDateSql: null,
-      endDateSql: null,
-    };
-
-    if (startDateStr && endDateStr) {
-      const parsedStart = parseIsoDate(startDateStr, false);
-      const parsedEnd = parseIsoDate(endDateStr, true);
-
-      if (!parsedStart || !parsedEnd) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate and endDate must be valid dates (YYYY-MM-DD) not earlier than 2025-01-01",
-        });
-      }
-
-      if (parsedStart > parsedEnd) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate cannot be later than endDate",
-        });
-      }
-
-      filterDatePayload = {
-        isActive: true,
-        startDateSql: formatDateForSql(parsedStart),
-        endDateSql: formatDateForSql(parsedEnd),
-      };
-    }
-
-    let limitClause = "";
-    let numericLimit = null;
-
-    if (limit !== undefined && limit !== null && limit.toString().trim().toLowerCase() !== "all") {
-      numericLimit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 1000));
-      limitClause = ` LIMIT ${numericLimit}`;
-    }
-
-    let rows = [];
-    let highlightId = null;
-    let highlightMrIds = [];
-    let highlightFlmId = null;
-
-    const resolveFlmIdFromMr = async mrId => {
-      if (!mrId) return null;
-      const [mrRows] = await connection.execute(
-        `SELECT flmId FROM mrs WHERE mrId = ? LIMIT 1`,
-        [mrId]
-      );
-      if (mrRows.length === 0) return null;
-      return mrRows[0].flmId || null;
-    };
-
-    const resolveManagerIdForFlm = async flmId => {
-      if (!flmId) return { slmId: null, tlmId: null };
-      const [flmRows] = await connection.execute(
-        `SELECT f.slmId, s.tlmId
-         FROM flms f
-         LEFT JOIN slms s ON f.slmId = s.slmId
-         WHERE f.flmId = ?
-         LIMIT 1`,
-        [flmId]
-      );
-      if (flmRows.length === 0) return { slmId: null, tlmId: null };
-      return {
-        slmId: flmRows[0].slmId || null,
-        tlmId: flmRows[0].tlmId || null,
-      };
-    };
-
-    if (userId) {
-      if (normalizedDivision === "player") {
-        if (normalizedUserRole === "flm") {
-          highlightFlmId = userId.toString().trim();
-          const [mrRows] = await connection.execute(
-            `SELECT mrId FROM mrs WHERE flmId = ?`,
-            [highlightFlmId]
-          );
-          highlightMrIds = mrRows.map(row => row.mrId);
-        } else if (normalizedUserRole === "mr") {
-          highlightMrIds = [userId.toString().trim()];
-        }
-      } else {
-        if (normalizedUserRole === "flm") {
-          if (normalizedManagerLevel === "flm") {
-            highlightId = userId.toString().trim();
-          } else {
-            const { slmId, tlmId } = await resolveManagerIdForFlm(userId);
-            highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-          }
-        } else if (normalizedUserRole === "mr") {
-          const flmId = await resolveFlmIdFromMr(userId);
-          if (normalizedManagerLevel === "flm") {
-            highlightId = flmId;
-          } else {
-            const { slmId, tlmId } = await resolveManagerIdForFlm(flmId);
-            highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-          }
-        } else if (normalizedUserRole === "slm") {
-          highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
-        } else if (normalizedUserRole === "tlm") {
-          highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
-        }
-      }
-    }
-
-    if (normalizedDivision === "team") {
-      let teamSql = "";
-      let teamParams = [];
-
-      if (filterDatePayload.isActive) {
-        const cte = buildDiceRollBalanceFilterCte();
-        if (normalizedManagerLevel === "flm") {
-          teamSql = `
-            ${cte}
-            SELECT
-              fdm.flmId AS managerId,
-              COALESCE(fdm.flmName, 'Unassigned') AS managerName,
-              COALESCE(f.teamName, NULL) AS teamName,
-              COALESCE(fdm.metricValue, 0) AS totalDiceRollBalance,
-              1 AS teamMembers
-            FROM flmDiceRollMetrics fdm
-            LEFT JOIN flms f ON fdm.flmId = f.flmId
-            ORDER BY totalDiceRollBalance DESC, managerName ASC
-            ${limitClause}
-          `;
-        } else if (normalizedManagerLevel === "tlm") {
-          teamSql = `
-            ${cte}
-            SELECT
-              s.tlmId AS managerId,
-              COALESCE(t.tlmName, 'Unassigned') AS managerName,
-              COALESCE(t.teamName, NULL) AS teamName,
-              COALESCE(SUM(fdm.metricValue), 0) AS totalDiceRollBalance,
-              COUNT(fdm.flmId) AS teamMembers
-            FROM flmDiceRollMetrics fdm
-            LEFT JOIN flms f ON fdm.flmId = f.flmId
-            LEFT JOIN slms s ON f.slmId = s.slmId
-            LEFT JOIN tlms t ON s.tlmId = t.tlmId
-            GROUP BY s.tlmId, t.tlmName, t.teamName
-            ORDER BY totalDiceRollBalance DESC, managerName ASC
-            ${limitClause}
-          `;
-        } else {
-          teamSql = `
-            ${cte}
-            SELECT
-              f.slmId AS managerId,
-              COALESCE(s.slmName, 'Unassigned') AS managerName,
-              COALESCE(s.teamName, NULL) AS teamName,
-              COALESCE(SUM(fdm.metricValue), 0) AS totalDiceRollBalance,
-              COUNT(fdm.flmId) AS teamMembers
-            FROM flmDiceRollMetrics fdm
-            LEFT JOIN flms f ON fdm.flmId = f.flmId
-            LEFT JOIN slms s ON f.slmId = s.slmId
-            GROUP BY f.slmId, s.slmName, s.teamName
-            ORDER BY totalDiceRollBalance DESC, managerName ASC
-            ${limitClause}
-          `;
-        }
-        teamParams = [filterDatePayload.startDateSql, filterDatePayload.endDateSql];
-      } else {
-        if (normalizedManagerLevel === "flm") {
-          teamSql = `
-            SELECT
-              f.flmId AS managerId,
-              COALESCE(f.flmName, 'Unassigned') AS managerName,
-              COALESCE(f.teamName, NULL) AS teamName,
-              COALESCE(f.currentDiceRollBalance, 0) AS totalDiceRollBalance,
-              1 AS teamMembers
-            FROM flms f
-            ORDER BY totalDiceRollBalance DESC, managerName ASC
-            ${limitClause}
-          `;
-        } else if (normalizedManagerLevel === "tlm") {
-          teamSql = `
-            SELECT
-              s.tlmId AS managerId,
-              COALESCE(t.tlmName, 'Unassigned') AS managerName,
-              COALESCE(t.teamName, NULL) AS teamName,
-              COALESCE(SUM(f.currentDiceRollBalance), 0) AS totalDiceRollBalance,
-              COUNT(f.flmId) AS teamMembers
-            FROM flms f
-            LEFT JOIN slms s ON f.slmId = s.slmId
-            LEFT JOIN tlms t ON s.tlmId = t.tlmId
-            GROUP BY s.tlmId, t.tlmName, t.teamName
-            ORDER BY totalDiceRollBalance DESC, managerName ASC
-            ${limitClause}
-          `;
-        } else {
-          teamSql = `
-            SELECT
-              f.slmId AS managerId,
-              COALESCE(s.slmName, 'Unassigned') AS managerName,
-              COALESCE(s.teamName, NULL) AS teamName,
-              COALESCE(SUM(f.currentDiceRollBalance), 0) AS totalDiceRollBalance,
-              COUNT(f.flmId) AS teamMembers
-            FROM flms f
-            LEFT JOIN slms s ON f.slmId = s.slmId
-            GROUP BY f.slmId, s.slmName, s.teamName
-            ORDER BY totalDiceRollBalance DESC, managerName ASC
-            ${limitClause}
-          `;
-        }
-      }
-      [rows] = await connection.execute(teamSql, teamParams);
-    } else {
-      let playerSql = "";
-      let playerParams = [];
-
-      if (filterDatePayload.isActive) {
-        const cte = buildMrDiceRollBalanceFilterCte();
-        playerSql = `
-          ${cte}
-          SELECT
-            mdmr.mrId AS playerId,
-            COALESCE(mdmr.mrName, 'Unassigned') AS playerName,
-            COALESCE(m.teamName, NULL) AS teamName,
-            COALESCE(mdmr.metricValue, 0) AS diceRollBalance
-          FROM mrDiceRollMetrics mdmr
-          LEFT JOIN mrs m ON mdmr.mrId = m.mrId
-          ORDER BY diceRollBalance DESC, playerName ASC
-          ${limitClause}
-        `;
-        playerParams = [filterDatePayload.startDateSql, filterDatePayload.endDateSql];
-      } else {
-        playerSql = `
-          SELECT
-            m.mrId AS playerId,
-            COALESCE(m.mrName, 'Unassigned') AS playerName,
-            COALESCE(m.teamName, NULL) AS teamName,
-            COALESCE(m.diceRollBalance, 0) AS diceRollBalance
-          FROM mrs m
-          ORDER BY diceRollBalance DESC, playerName ASC
-          ${limitClause}
-        `;
-      }
-      [rows] = await connection.execute(playerSql, playerParams);
-    }
-
-    const data =
-      normalizedDivision === "team"
-        ? rows.map((row, index) => ({
-            rank: index + 1,
-            managerId: row.managerId,
-            managerName: row.managerName,
-            teamName: row.teamName || null,
-            totalDiceRollBalance: Number(row.totalDiceRollBalance) || 0,
-            teamMembers: Number(row.teamMembers) || 0,
-            metricValue: Number(row.totalDiceRollBalance) || 0,
-          }))
-        : rows.map((row, index) => {
-            const mrId = row.playerId;
-            const isHighlighted = highlightMrIds.length > 0 && highlightMrIds.includes(mrId);
-            return {
-              rank: index + 1,
-              mrId: mrId,
-              mrName: row.playerName,
-              teamName: row.teamName || null,
-              diceRollBalance: Number(row.diceRollBalance) || 0,
-              metricValue: Number(row.diceRollBalance) || 0,
-              isHighlighted: isHighlighted,
-            };
-          });
-
-    let highlightedEntry = null;
-    if (normalizedDivision === "team") {
-      if (highlightId && data.length > 0) {
-        highlightedEntry = data.find(entry => entry.managerId && entry.managerId.toString() === highlightId) || null;
-      }
-    } else {
-      if (highlightMrIds.length > 0 && data.length > 0) {
-        const highlightedEntries = data.filter(entry => entry.isHighlighted);
-        if (highlightedEntries.length > 0) {
-          if (normalizedUserRole === "flm" && highlightFlmId) {
-            highlightedEntry = highlightedEntries.reduce((best, current) => 
-              current.rank < best.rank ? current : best
-            );
-          } else if (normalizedUserRole === "mr") {
-            highlightedEntry = highlightedEntries[0];
-          } else {
-            highlightedEntry = highlightedEntries.length === 1 ? highlightedEntries[0] : highlightedEntries;
-          }
-        }
-      }
-    }
-
-    res.status(200).json({
-      success: true,
-      division: normalizedDivision,
-      managerLevel: normalizedDivision === "team" ? normalizedManagerLevel : null,
-      limit: numericLimit,
-      filterApplied: filterDatePayload.isActive,
-      filterRange: filterDatePayload.isActive
-        ? {
-            startDate: startDateStr,
-            endDate: endDateStr,
-          }
-        : null,
-      total: data.length,
-      highlight: highlightedEntry,
-      data,
-    });
-  } catch (error) {
-    console.error("Error fetching dice roll balance leaderboard:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  } finally {
-    if (connection) connection.release();
-  }
-};
-
-export const getHomeLeaderboard = async (req, res) => {
-  const connection = await db.getConnection();
-
-  try {
-    const {
-      managerLevel = "flm",
-      limit = 10,
-      userRole,
-      userId,
-      startDate,
-      endDate,
-    } = req.query;
-
-    const normalizedManagerLevel = managerLevel.toString().trim().toLowerCase();
-    const normalizedUserRole = userRole ? userRole.toString().trim().toLowerCase() : null;
-    const startDateStr = startDate ? startDate.toString().trim() : null;
-    const endDateStr = endDate ? endDate.toString().trim() : null;
-
-    if (!["flm", "slm", "tlm"].includes(normalizedManagerLevel)) {
-      return res.status(400).json({
-        success: false,
-        message: "managerLevel must be 'flm', 'slm' or 'tlm'",
-      });
-    }
-
-    if ((startDateStr && !endDateStr) || (!startDateStr && endDateStr)) {
-      return res.status(400).json({
-        success: false,
-        message: "Both startDate and endDate are required to enable date filtering",
-      });
-    }
-
-    let filterDatePayload = {
-      isActive: false,
-      startDateSql: null,
-      endDateSql: null,
-    };
-
-    if (startDateStr && endDateStr) {
-      const parsedStart = parseIsoDate(startDateStr, false);
-      const parsedEnd = parseIsoDate(endDateStr, true);
-
-      if (!parsedStart || !parsedEnd) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate and endDate must be valid dates (YYYY-MM-DD) not earlier than 2025-01-01",
-        });
-      }
-
-      if (parsedStart > parsedEnd) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate cannot be later than endDate",
-        });
-      }
-
-      filterDatePayload = {
-        isActive: true,
-        startDateSql: formatDateForSql(parsedStart),
-        endDateSql: formatDateForSql(parsedEnd),
-      };
-    }
-
-    let limitClause = "";
-    let numericLimit = null;
-
-    if (limit !== undefined && limit !== null && limit.toString().trim().toLowerCase() !== "all") {
-      numericLimit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 1000));
-      limitClause = ` LIMIT ${numericLimit}`;
-    }
-
-    let highlightId = null;
-
-    const resolveFlmIdFromMr = async mrId => {
-      if (!mrId) return null;
-      const [mrRows] = await connection.execute(
-        `SELECT flmId FROM mrs WHERE mrId = ? LIMIT 1`,
-        [mrId]
-      );
-      if (mrRows.length === 0) return null;
-      return mrRows[0].flmId || null;
-    };
-
-    const resolveManagerIdForFlm = async flmId => {
-      if (!flmId) return { slmId: null, tlmId: null };
-      const [flmRows] = await connection.execute(
-        `SELECT f.slmId, s.tlmId
-         FROM flms f
-         LEFT JOIN slms s ON f.slmId = s.slmId
-         WHERE f.flmId = ?
-         LIMIT 1`,
-        [flmId]
-      );
-      if (flmRows.length === 0) return { slmId: null, tlmId: null };
-      return {
-        slmId: flmRows[0].slmId || null,
-        tlmId: flmRows[0].tlmId || null,
-      };
-    };
-
-    if (userId) {
-      if (normalizedUserRole === "flm") {
-        if (normalizedManagerLevel === "flm") {
-          highlightId = userId.toString().trim();
-        } else {
-          const { slmId, tlmId } = await resolveManagerIdForFlm(userId);
-          highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-        }
-      } else if (normalizedUserRole === "mr") {
-        const flmId = await resolveFlmIdFromMr(userId);
-        if (normalizedManagerLevel === "flm") {
-          highlightId = flmId;
-        } else {
-          const { slmId, tlmId } = await resolveManagerIdForFlm(flmId);
-          highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-        }
-      } else if (normalizedUserRole === "slm") {
-        highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
-      } else if (normalizedUserRole === "tlm") {
-        highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
-      }
-    }
-
-    let teamSql = "";
-    const queryParams = [];
-
-    if (filterDatePayload.isActive) {
-      if (normalizedManagerLevel === "flm") {
-        teamSql = `
-          WITH finishedPawns AS (
-            SELECT DISTINCT ml.playerId, ml.pawnId
-            FROM moveLogs ml
-            WHERE ml.moveTime BETWEEN ? AND ?
-              AND ml.toPosition = 'finished'
-          )
-          SELECT
-            f.flmId AS managerId,
-            COALESCE(f.flmName, 'Unassigned') AS managerName,
-            COALESCE(f.teamName, NULL) AS teamName,
-            COUNT(DISTINCT fp.pawnId) AS totalHomePawns,
-            1 AS teamMembers
-          FROM flms f
-          LEFT JOIN finishedPawns fp ON fp.playerId = f.flmId
-          GROUP BY f.flmId, f.flmName, f.teamName
-          ORDER BY totalHomePawns DESC, managerName ASC
-          ${limitClause}
-        `;
-        queryParams.push(filterDatePayload.startDateSql, filterDatePayload.endDateSql);
-      } else if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          WITH finishedPawns AS (
-            SELECT DISTINCT ml.playerId, ml.pawnId
-            FROM moveLogs ml
-            WHERE ml.moveTime BETWEEN ? AND ?
-              AND ml.toPosition = 'finished'
-          )
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COUNT(DISTINCT fp.pawnId) AS totalHomePawns,
-            COUNT(DISTINCT f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          LEFT JOIN finishedPawns fp ON fp.playerId = f.flmId
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalHomePawns DESC, managerName ASC
-          ${limitClause}
-        `;
-        queryParams.push(filterDatePayload.startDateSql, filterDatePayload.endDateSql);
-      } else {
-        teamSql = `
-          WITH finishedPawns AS (
-            SELECT DISTINCT ml.playerId, ml.pawnId
-            FROM moveLogs ml
-            WHERE ml.moveTime BETWEEN ? AND ?
-              AND ml.toPosition = 'finished'
-          )
-          SELECT
-            f.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COUNT(DISTINCT fp.pawnId) AS totalHomePawns,
-            COUNT(DISTINCT f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          LEFT JOIN finishedPawns fp ON fp.playerId = f.flmId
-          GROUP BY f.slmId, s.slmName, s.teamName
-          ORDER BY totalHomePawns DESC, managerName ASC
-          ${limitClause}
-        `;
-        queryParams.push(filterDatePayload.startDateSql, filterDatePayload.endDateSql);
-      }
-    } else {
-      if (normalizedManagerLevel === "flm") {
-        teamSql = `
-          SELECT
-            f.flmId AS managerId,
-            COALESCE(f.flmName, 'Unassigned') AS managerName,
-            COALESCE(f.teamName, NULL) AS teamName,
-            COUNT(p.id) AS totalHomePawns,
-            1 AS teamMembers
-          FROM flms f
-          LEFT JOIN pawns p ON p.playerId = f.flmId 
-            AND p.type = 'center' 
-            AND p.currentPosition = 'finished'
-          GROUP BY f.flmId, f.flmName, f.teamName
-          ORDER BY totalHomePawns DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COUNT(p.id) AS totalHomePawns,
-            COUNT(DISTINCT f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          LEFT JOIN pawns p ON p.playerId = f.flmId 
-            AND p.type = 'center' 
-            AND p.currentPosition = 'finished'
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalHomePawns DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else {
-        teamSql = `
-          SELECT
-            f.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COUNT(p.id) AS totalHomePawns,
-            COUNT(DISTINCT f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          LEFT JOIN pawns p ON p.playerId = f.flmId 
-            AND p.type = 'center' 
-            AND p.currentPosition = 'finished'
-          GROUP BY f.slmId, s.slmName, s.teamName
-          ORDER BY totalHomePawns DESC, managerName ASC
-          ${limitClause}
-        `;
-      }
-    }
-
-    const [rows] = await connection.execute(teamSql, queryParams);
-
-    const data = rows.map((row, index) => ({
-      rank: index + 1,
-      managerId: row.managerId,
-      managerName: row.managerName,
-      teamName: row.teamName || null,
-      totalHomePawns: Number(row.totalHomePawns) || 0,
-      teamMembers: Number(row.teamMembers) || 0,
-      metricValue: Number(row.totalHomePawns) || 0,
-    }));
-
-    const highlightedEntry =
-      highlightId && data.length > 0
-        ? data.find(entry => entry.managerId && entry.managerId.toString() === highlightId) || null
-        : null;
-
-    res.status(200).json({
-      success: true,
-      division: "team",
-      managerLevel: normalizedManagerLevel,
-      limit: numericLimit,
-      filterApplied: filterDatePayload.isActive,
-      filterRange: filterDatePayload.isActive
-        ? {
-            startDate: startDateStr,
-            endDate: endDateStr,
-          }
-        : null,
-      total: data.length,
-      highlight: highlightedEntry,
-      data,
-    });
-  } catch (error) {
-    console.error("Error fetching home leaderboard:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  } finally {
-    if (connection) connection.release();
-  }
-};
-
-//only prescription related -not in use currently
 export const getPrescriptionPointsLeaderboard = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -5000,13 +3808,12 @@ export const getPrescriptionPointsLeaderboard = async (req, res) => {
             COALESCE(t.tlmName, 'Unassigned') AS managerName,
             COALESCE(SUM(p.points), 0) AS totalPoints,
             COUNT(DISTINCT f.flmId) AS teamMembers
-          FROM uploads p
+          FROM prescriptions p
           JOIN mrs m ON p.mrId = m.mrId
           JOIN flms f ON m.flmId = f.flmId
           LEFT JOIN slms s ON f.slmId = s.slmId
           LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          WHERE p.type = 'prescription'
-            AND p.status = 'approved'
+          WHERE p.status = 'approved'
             AND p.reviewDate BETWEEN ? AND ?
           GROUP BY s.tlmId, t.tlmName
           ORDER BY totalPoints DESC, managerName ASC
@@ -5020,12 +3827,11 @@ export const getPrescriptionPointsLeaderboard = async (req, res) => {
             COALESCE(s.slmName, 'Unassigned') AS managerName,
             COALESCE(SUM(p.points), 0) AS totalPoints,
             COUNT(DISTINCT f.flmId) AS teamMembers
-          FROM uploads p
+          FROM prescriptions p
           JOIN mrs m ON p.mrId = m.mrId
           JOIN flms f ON m.flmId = f.flmId
           LEFT JOIN slms s ON f.slmId = s.slmId
-          WHERE p.type = 'prescription'
-            AND p.status = 'approved'
+          WHERE p.status = 'approved'
             AND p.reviewDate BETWEEN ? AND ?
           GROUP BY f.slmId, s.slmName
           ORDER BY totalPoints DESC, managerName ASC
@@ -5039,11 +3845,10 @@ export const getPrescriptionPointsLeaderboard = async (req, res) => {
           f.flmId AS playerId,
           f.flmName AS playerName,
           COALESCE(SUM(p.points), 0) AS totalPoints
-        FROM uploads p
+        FROM prescriptions p
         JOIN mrs m ON p.mrId = m.mrId
         JOIN flms f ON m.flmId = f.flmId
-        WHERE p.type = 'prescription'
-          AND p.status = 'approved'
+        WHERE p.status = 'approved'
           AND p.reviewDate BETWEEN ? AND ?
         GROUP BY f.flmId, f.flmName
         ORDER BY totalPoints DESC, playerName ASC
@@ -5103,387 +3908,6 @@ export const getPrescriptionPointsLeaderboard = async (req, res) => {
     if (connection) connection.release();
   }
 };
-
-//all type user points -not in use currently
-export const getPointsLeaderboard = async (req, res) => {
-  const connection = await db.getConnection();
-
-  try {
-    const {
-      division = "team",
-      managerLevel = "slm",
-      limit = 10,
-      userRole,
-      userId,
-      startDate,
-      endDate,
-      brandId,
-      brandName,
-    } = req.query;
-
-    const normalizedDivision = division.toString().trim().toLowerCase();
-    const normalizedManagerLevel = managerLevel.toString().trim().toLowerCase();
-    const normalizedUserRole = userRole ? userRole.toString().trim().toLowerCase() : null;
-    const startDateStr = startDate ? startDate.toString().trim() : null;
-    const endDateStr = endDate ? endDate.toString().trim() : null;
-    const brandIdStr = brandId ? brandId.toString().trim() : null;
-    const brandNameStr = brandName ? brandName.toString().trim() : null;
-
-    if (!["team", "player"].includes(normalizedDivision)) {
-      return res.status(400).json({
-        success: false,
-        message: "division must be either 'team' or 'player'",
-      });
-    }
-
-    if (normalizedDivision === "team" && !["slm", "tlm"].includes(normalizedManagerLevel)) {
-      return res.status(400).json({
-        success: false,
-        message: "managerLevel must be 'slm' or 'tlm' when division is 'team'",
-      });
-    }
-
-    if ((startDateStr && !endDateStr) || (!startDateStr && endDateStr)) {
-      return res.status(400).json({
-        success: false,
-        message: "Both startDate and endDate are required to enable filtering",
-      });
-    }
-
-    let filterDatePayload = {
-      isActive: false,
-      startDateSql: null,
-      endDateSql: null,
-    };
-
-    if (startDateStr && endDateStr) {
-      const parsedStart = parseIsoDate(startDateStr, false);
-      const parsedEnd = parseIsoDate(endDateStr, true);
-
-      if (!parsedStart || !parsedEnd) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate and endDate must be valid dates (YYYY-MM-DD) not earlier than 2025-01-01",
-        });
-      }
-
-      if (parsedStart > parsedEnd) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate cannot be later than endDate",
-        });
-      }
-
-      filterDatePayload = {
-        isActive: true,
-        startDateSql: formatDateForSql(parsedStart),
-        endDateSql: formatDateForSql(parsedEnd),
-      };
-    }
-
-    let limitClause = "";
-    let numericLimit = null;
-
-    if (limit !== undefined && limit !== null && limit.toString().trim().toLowerCase() !== "all") {
-      numericLimit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 1000));
-      limitClause = ` LIMIT ${numericLimit}`;
-    }
-
-    let rows = [];
-
-    const resolveFlmIdFromMr = async mrId => {
-      if (!mrId) return null;
-      const [mrRows] = await connection.execute(
-        `SELECT flmId FROM mrs WHERE mrId = ? LIMIT 1`,
-        [mrId]
-      );
-      if (mrRows.length === 0) return null;
-      return mrRows[0].flmId || null;
-    };
-
-    const resolveManagerIdForFlm = async flmId => {
-      if (!flmId) return { slmId: null, tlmId: null };
-      const [flmRows] = await connection.execute(
-        `SELECT f.slmId, s.tlmId
-         FROM flms f
-         LEFT JOIN slms s ON f.slmId = s.slmId
-         WHERE f.flmId = ?
-         LIMIT 1`,
-        [flmId]
-      );
-      if (flmRows.length === 0) return { slmId: null, tlmId: null };
-      return {
-        slmId: flmRows[0].slmId || null,
-        tlmId: flmRows[0].tlmId || null,
-      };
-    };
-
-    let highlightId = null;
-    let highlightMrIds = [];
-    let highlightFlmId = null;
-
-    if (userId) {
-      if (normalizedDivision === "player") {
-        if (normalizedUserRole === "flm") {
-          highlightFlmId = userId.toString().trim();
-          const [mrRows] = await connection.execute(
-            `SELECT mrId FROM mrs WHERE flmId = ?`,
-            [highlightFlmId]
-          );
-          highlightMrIds = mrRows.map(row => row.mrId);
-        } else if (normalizedUserRole === "mr") {
-          highlightMrIds = [userId.toString().trim()];
-        }
-      } else {
-        if (normalizedUserRole === "flm") {
-          const { slmId, tlmId } = await resolveManagerIdForFlm(userId);
-          highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-        } else if (normalizedUserRole === "mr") {
-          const flmId = await resolveFlmIdFromMr(userId);
-          const { slmId, tlmId } = await resolveManagerIdForFlm(flmId);
-          highlightId = normalizedManagerLevel === "tlm" ? tlmId : slmId;
-        } else if (normalizedUserRole === "slm") {
-          highlightId = normalizedManagerLevel === "slm" ? userId.toString().trim() : null;
-        } else if (normalizedUserRole === "tlm") {
-          highlightId = normalizedManagerLevel === "tlm" ? userId.toString().trim() : null;
-        }
-      }
-    }
-
-    const brandFilter = brandIdStr ? { brandId: brandIdStr } : brandNameStr ? { brandName: brandNameStr } : null;
-    const brandFilterActive = !!brandFilter;
-    
-    // If brand filter is active, we need to query uploads table even without date filter
-    const needsUploadsQuery = filterDatePayload.isActive || brandFilterActive;
-    
-    const filterCteSql = needsUploadsQuery ? buildPointsFilterCte(brandFilter, filterDatePayload.isActive) : "";
-    let filterParams = [];
-    
-    // Build filter parameters
-    if (filterDatePayload.isActive) {
-      filterParams.push(filterDatePayload.startDateSql, filterDatePayload.endDateSql);
-    }
-    
-    // Add brand filter parameter if present
-    if (brandFilter) {
-      if (brandFilter.brandId) {
-        filterParams.push(brandFilter.brandId);
-      } else if (brandFilter.brandName) {
-        filterParams.push(brandFilter.brandName);
-      }
-    }
-
-    if (normalizedDivision === "team") {
-      let teamSql = "";
-
-      if (needsUploadsQuery) {
-        if (normalizedManagerLevel === "tlm") {
-          teamSql = `
-            ${filterCteSql}
-            SELECT
-              s.tlmId AS managerId,
-              COALESCE(t.tlmName, 'Unassigned') AS managerName,
-              COALESCE(t.teamName, NULL) AS teamName,
-              COALESCE(SUM(fpm.metricValue), 0) AS totalPoints,
-              COUNT(fpm.flmId) AS teamMembers
-            FROM flmPointMetrics fpm
-            LEFT JOIN slms s ON fpm.slmId = s.slmId
-            LEFT JOIN tlms t ON s.tlmId = t.tlmId
-            GROUP BY s.tlmId, t.tlmName, t.teamName
-            ORDER BY totalPoints DESC, managerName ASC
-            ${limitClause}
-          `;
-        } else {
-          teamSql = `
-            ${filterCteSql}
-            SELECT
-              fpm.slmId AS managerId,
-              COALESCE(s.slmName, 'Unassigned') AS managerName,
-              COALESCE(s.teamName, NULL) AS teamName,
-              COALESCE(SUM(fpm.metricValue), 0) AS totalPoints,
-              COUNT(fpm.flmId) AS teamMembers
-            FROM flmPointMetrics fpm
-            LEFT JOIN slms s ON fpm.slmId = s.slmId
-            ${brandFilterActive ? "WHERE fpm.metricValue > 0" : ""}
-            GROUP BY fpm.slmId, s.slmName, s.teamName
-            ORDER BY totalPoints DESC, managerName ASC
-            ${limitClause}
-          `;
-        }
-      } else {
-      if (normalizedManagerLevel === "tlm") {
-        teamSql = `
-          SELECT
-            s.tlmId AS managerId,
-            COALESCE(t.tlmName, 'Unassigned') AS managerName,
-            COALESCE(t.teamName, NULL) AS teamName,
-            COALESCE(SUM(f.points), 0) AS totalPoints,
-            COUNT(f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          LEFT JOIN tlms t ON s.tlmId = t.tlmId
-          GROUP BY s.tlmId, t.tlmName, t.teamName
-          ORDER BY totalPoints DESC, managerName ASC
-          ${limitClause}
-        `;
-      } else {
-        teamSql = `
-          SELECT
-            f.slmId AS managerId,
-            COALESCE(s.slmName, 'Unassigned') AS managerName,
-            COALESCE(s.teamName, NULL) AS teamName,
-            COALESCE(SUM(f.points), 0) AS totalPoints,
-            COUNT(f.flmId) AS teamMembers
-          FROM flms f
-          LEFT JOIN slms s ON f.slmId = s.slmId
-          GROUP BY f.slmId, s.slmName, s.teamName
-          ORDER BY totalPoints DESC, managerName ASC
-          ${limitClause}
-        `;
-      }
-      }
-      [rows] = await connection.execute(teamSql, filterParams);
-    } else {
-      let playerSql = "";
-      if (needsUploadsQuery) {
-        let brandWhereClause = "";
-        if (brandFilter && brandFilter.brandId) {
-          brandWhereClause = " AND p.brandId = ?";
-        } else if (brandFilter && brandFilter.brandName) {
-          brandWhereClause = " AND p.brandName = ?";
-        }
-        
-        const dateWhereClause = filterDatePayload.isActive ? "AND p.reviewDate BETWEEN ? AND ?" : "";
-        
-        // Always include all upload types (prescription, pob, camp)
-        const typeWhereClause = "AND p.type IN ('prescription', 'pob', 'camp')";
-        
-        const mrFilterCteSql = `
-          WITH filteredMrPoints AS (
-            SELECT
-              m.mrId,
-              SUM(p.points) AS totalPoints
-            FROM uploads p
-            JOIN mrs m ON p.mrId = m.mrId
-            WHERE p.status = 'approved'
-              AND p.isCalculated = 1
-              ${typeWhereClause}
-              ${dateWhereClause}
-              ${brandWhereClause}
-            GROUP BY m.mrId
-          ),
-          mrPointMetrics AS (
-            SELECT
-              m.mrId,
-              COALESCE(m.mrName, 'Unassigned') AS mrName,
-              COALESCE(m.teamName, NULL) AS teamName,
-              COALESCE(fmp.totalPoints, 0) AS metricValue
-            FROM mrs m
-            LEFT JOIN filteredMrPoints fmp ON fmp.mrId = m.mrId
-          )
-        `;
-        playerSql = `
-          ${mrFilterCteSql}
-          SELECT
-            mpm.mrId AS playerId,
-            mpm.mrName AS playerName,
-            mpm.teamName AS teamName,
-            mpm.metricValue AS totalPoints
-          FROM mrPointMetrics mpm
-          ORDER BY totalPoints DESC, playerName ASC
-          ${limitClause}
-        `;
-      } else {
-        playerSql = `
-          SELECT
-            m.mrId AS playerId,
-            COALESCE(m.mrName, 'Unassigned') AS playerName,
-            COALESCE(m.teamName, NULL) AS teamName,
-            COALESCE(m.points, 0) AS totalPoints
-          FROM mrs m
-          ORDER BY totalPoints DESC, playerName ASC
-          ${limitClause}
-        `;
-      }
-      [rows] = await connection.execute(playerSql, filterParams);
-    }
-
-    const data =
-      normalizedDivision === "team"
-        ? rows.map((row, index) => ({
-            rank: index + 1,
-            managerId: row.managerId,
-            managerName: row.managerName,
-            teamName: row.teamName || null,
-            totalPoints: Number(row.totalPoints) || 0,
-            teamMembers: Number(row.teamMembers) || 0,
-            metricValue: Number(row.totalPoints) || 0,
-          }))
-        : rows.map((row, index) => {
-            const mrId = row.playerId;
-            const isHighlighted = highlightMrIds.length > 0 && highlightMrIds.includes(mrId);
-            return {
-              rank: index + 1,
-              mrId: mrId,
-              mrName: row.playerName,
-              teamName: row.teamName || null,
-              totalPoints: Number(row.totalPoints) || 0,
-              metricValue: Number(row.totalPoints) || 0,
-              isHighlighted: isHighlighted,
-            };
-          });
-
-    let highlightedEntry = null;
-    if (normalizedDivision === "team") {
-      if (highlightId && data.length > 0) {
-        highlightedEntry = data.find(entry => entry.managerId && entry.managerId.toString() === highlightId) || null;
-      }
-    } else {
-      if (highlightMrIds.length > 0 && data.length > 0) {
-        const highlightedEntries = data.filter(entry => entry.isHighlighted);
-        if (highlightedEntries.length > 0) {
-          if (normalizedUserRole === "flm" && highlightFlmId) {
-            highlightedEntry = highlightedEntries.reduce((best, current) => 
-              current.rank < best.rank ? current : best
-            );
-          } else if (normalizedUserRole === "mr") {
-            highlightedEntry = highlightedEntries[0];
-          } else {
-            highlightedEntry = highlightedEntries.length === 1 ? highlightedEntries[0] : highlightedEntries;
-          }
-        }
-      }
-    }
-
-    res.status(200).json({
-      success: true,
-      division: normalizedDivision,
-      managerLevel: normalizedDivision === "team" ? normalizedManagerLevel : null,
-      limit: numericLimit,
-      filterApplied: filterDatePayload.isActive || !!brandFilter,
-      filterRange: filterDatePayload.isActive
-        ? {
-            startDate: startDateStr,
-            endDate: endDateStr,
-          }
-        : null,
-      brandFilter: brandFilter || null,
-      total: data.length,
-      highlight: highlightedEntry,
-      data,
-    });
-  } catch (error) {
-    console.error("Error fetching points leaderboard:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  } finally {
-    if (connection) connection.release();
-  }
-};
-
 
 
 //before adding points to move conversion while reviewing prescription
@@ -5613,41 +4037,34 @@ export const getPointsLeaderboard = async (req, res) => {
 //   }
 // };
 
-export const downloadUploadImage = async (req, res) => {
+export const downloadPrescriptionImage = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { flmId, uploadId } = req.params;
-
-    if (!flmId || !uploadId) {
-      return res.status(400).json({
-        success: false,
-        message: "flmId and uploadId are required",
-      });
-    }
+    const { flmId, prescriptionId } = req.params;
 
     const [rows] = await connection.execute(
-      `SELECT p.uploadImage, p.type
-       FROM uploads p
+      `SELECT p.prescriptionImage
+       FROM prescriptions p
        JOIN mrs m ON p.mrId = m.mrId
        WHERE p.id = ? AND m.flmId = ?
        LIMIT 1`,
-      [uploadId, flmId]
+      [prescriptionId, flmId]
     );
 
     if (rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Upload image not found for this FLM",
+        message: "Prescription image not found for this FLM",
       });
     }
 
-    const imagePath = rows[0].uploadImage;
+    const imagePath = rows[0].prescriptionImage;
 
     if (!imagePath) {
       return res.status(404).json({
         success: false,
-        message: "No image uploaded for this upload",
+        message: "No image uploaded for this prescription",
       });
     }
 
@@ -5661,110 +4078,24 @@ export const downloadUploadImage = async (req, res) => {
     if (!fs.existsSync(absolutePath)) {
       return res.status(404).json({
         success: false,
-        message: "Upload image file not found on server",
+        message: "Prescription image file not found on server",
       });
     }
 
     return res.download(absolutePath, path.basename(absolutePath), err => {
       if (err) {
-        console.error("Error sending upload image:", err);
+        console.error("Error sending prescription image:", err);
         if (!res.headersSent) {
           res.status(500).json({
             success: false,
-            message: "Failed to download upload image",
+            message: "Failed to download prescription image",
             error: err.message,
           });
         }
       }
     });
   } catch (error) {
-    console.error("Error downloading upload image:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  } finally {
-    if (connection) connection.release();
-  }
-};
-
-export const viewUploadImage = async (req, res) => {
-  const connection = await db.getConnection();
-
-  try {
-    const { flmId, uploadId } = req.params;
-
-    if (!flmId || !uploadId) {
-      return res.status(400).json({
-        success: false,
-        message: "flmId and uploadId are required",
-      });
-    }
-
-    const [rows] = await connection.execute(
-      `SELECT p.uploadImage, p.type
-       FROM uploads p
-       JOIN mrs m ON p.mrId = m.mrId
-       WHERE p.id = ? AND m.flmId = ?
-       LIMIT 1`,
-      [uploadId, flmId]
-    );
-
-    if (rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Upload image not found for this FLM",
-      });
-    }
-
-    const imagePath = rows[0].uploadImage;
-
-    if (!imagePath) {
-      return res.status(404).json({
-        success: false,
-        message: "No image uploaded for this upload",
-      });
-    }
-
-    const normalizedPath =
-      imagePath.startsWith("/") || imagePath.startsWith("\\")
-        ? imagePath.slice(1)
-        : imagePath;
-
-    const absolutePath = path.join(__dirname, "..", "..", normalizedPath);
-
-    if (!fs.existsSync(absolutePath)) {
-      return res.status(404).json({
-        success: false,
-        message: "Upload image file not found on server",
-      });
-    }
-
-    // Get file extension to determine content type
-    const fileExtension = path.extname(absolutePath) || path.extname(imagePath) || ".jpg";
-    const contentType = fileExtension.toLowerCase() === ".jpeg" || fileExtension.toLowerCase() === ".jpg"
-      ? "image/jpeg"
-      : "image/jpeg"; // Default to jpeg
-
-    // Set headers to display image in browser
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Disposition", "inline"); // Display in browser instead of download
-
-    return res.sendFile(absolutePath, err => {
-      if (err) {
-        console.error("Error sending upload image:", err);
-        if (!res.headersSent) {
-          res.status(500).json({
-            success: false,
-            message: "Failed to view upload image",
-            error: err.message,
-          });
-        }
-      }
-    });
-  } catch (error) {
-    console.error("Error viewing upload image:", error);
+    console.error("Error downloading prescription image:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -5872,7 +4203,7 @@ export const getUserStats = async (req, res) => {
     if (normalizedRole === "flm") {
       const [flmRows] = await connection.execute(
         `SELECT flmId, flmName, hq, zone, region, points, moves, currentBalanceMoves, kills, status,
-                hearts, createdAt, updatedAt
+                diamonds, createdAt, updatedAt
          FROM flms
          WHERE LOWER(TRIM(flmId)) = ?
          LIMIT 1`,
@@ -5923,7 +4254,7 @@ export const getUserStats = async (req, res) => {
           moves: flm.moves ?? 0,
           currentBalanceMoves: flm.currentBalanceMoves ?? 0,
           kills: flm.kills ?? 0,
-          hearts: flm.hearts ?? 0,
+          diamonds: flm.diamonds ?? 0,
           status: flm.status,
           createdAt: flm.createdAt,
           updatedAt: flm.updatedAt,
@@ -5966,9 +4297,8 @@ export const getUserStats = async (req, res) => {
             SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pendingPrescriptions,
             SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejectedPrescriptions,
             SUM(CASE WHEN status = 'approved' THEN points ELSE 0 END) AS approvedPoints
-         FROM uploads
-         WHERE type = 'prescription'
-           AND LOWER(TRIM(mrId)) = ?`,
+         FROM prescriptions
+         WHERE LOWER(TRIM(mrId)) = ?`,
         [normalizedIdLower]
       );
 
@@ -6163,21 +4493,17 @@ export const updateMrAccess = async (req, res) => {
 
     await connection.beginTransaction();
 
-    // Get IST datetime for updatedAt
-    const updatedAtIST = formatISTDateTimeForSQL();
-
     await connection.execute(
       `UPDATE mrs
        SET hasAccess = ?,
            fromDate = ?,
            toDate = ?,
-           updatedAt = ?
+           updatedAt = NOW()
        WHERE mrId = ? AND flmId = ?`,
       [
         accessFlag,
         accessFlag === 1 ? fromDate : null,
         accessFlag === 1 ? toDate || null : null,
-        updatedAtIST,
         mrId,
         flmId,
       ]

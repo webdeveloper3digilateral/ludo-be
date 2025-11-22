@@ -7,7 +7,7 @@ CREATE TABLE `admins` (
   `phone` varchar(12) DEFAULT NULL,
   `status` varchar(255) DEFAULT 'Active',
   `createdAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `updatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `adminId` (`adminId`),
   KEY `idx_createdAt` (`createdAt`),

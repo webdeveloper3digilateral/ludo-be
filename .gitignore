@@ -17,3 +17,4 @@ pids/
 *.pid.lock
 lib-cov/
 logs/
+uploads

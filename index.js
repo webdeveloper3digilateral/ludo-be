@@ -12,6 +12,7 @@ import mrRoute from "./src/routes/mrRoutes.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { setupSocketHandlers } from "./src/socket/socketHandlers.js";
+import { startExpiredBoardsCron } from "./src/utils/cronJobs.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,6 +67,9 @@ try {
 
   // Setup socket handlers
   setupSocketHandlers(io);
+
+  // Start cron job for checking expired boards
+  startExpiredBoardsCron();
 
   httpServer.listen(PORT, () => {
     console.info(`🚀 Server running at http://localhost:${PORT}`);

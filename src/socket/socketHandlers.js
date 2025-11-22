@@ -1,124 +1,139 @@
-import db from "../config/db.js";
+  import db from "../config/db.js";
+  import { movePawnFromSocket } from "../controllers/flmController.js";
 
-let ioInstance = null;
+  let ioInstance = null;
 
-export const setupSocketHandlers = (io) => {
-  ioInstance = io;
+  export const setupSocketHandlers = (io) => {
+    ioInstance = io;
 
-  io.on("connection", (socket) => {
-    console.log(`🔌 Client connected: ${socket.id}`);
+    io.on("connection", (socket) => {
+      console.log(`🔌 Client connected: ${socket.id}`);
 
-    // Join a board room
-    socket.on("join_board", async (data) => {
-      try {
-        const { boardId, playerId } = data;
-
-        if (!boardId) {
-          socket.emit("error", { message: "Board ID is required" });
-          return;
-        }
-
-        // Verify board exists
-        const connection = await db.getConnection();
+      // Join a board room
+      socket.on("join_board", async (data) => {
         try {
-          const [boardRows] = await connection.execute(
-            `SELECT * FROM boards WHERE id = ?`,
-            [boardId]
-          );
+          const { boardId, playerId } = data;
 
-          if (boardRows.length === 0) {
-            socket.emit("error", { message: "Board not found" });
+          if (!boardId) {
+            socket.emit("error", { message: "Board ID is required" });
             return;
           }
 
-          // Join the board room
-          socket.join(`board:${boardId}`);
-          console.log(`✅ Socket ${socket.id} joined board: ${boardId}`);
+          // Verify board exists
+          const connection = await db.getConnection();
+          try {
+            const [boardRows] = await connection.execute(
+              `SELECT * FROM boards WHERE id = ?`,
+              [boardId]
+            );
 
-          // Notify others in the room
-          socket.to(`board:${boardId}`).emit("player_joined", {
-            playerId,
-            socketId: socket.id,
-          });
+            if (boardRows.length === 0) {
+              socket.emit("error", { message: "Board not found" });
+              return;
+            }
 
-          // Send current board state to the new player
-          const [pawns] = await connection.execute(
-            `SELECT * FROM pawns WHERE boardId = ? ORDER BY playerId, id`,
-            [boardId]
-          );
+            // Join the board room
+            socket.join(`board:${boardId}`);
+            console.log(`✅ Socket ${socket.id} joined board: ${boardId}`);
 
-          socket.emit("board_state", {
-            success: true,
-            data: { pawns },
-          });
-        } finally {
-          connection.release();
+            // Notify others in the room
+            socket.to(`board:${boardId}`).emit("player_joined", {
+              playerId,
+              socketId: socket.id,
+            });
+
+            // Send current board state to the new player
+            const [pawns] = await connection.execute(
+              `SELECT * FROM pawns WHERE boardId = ? ORDER BY playerId, id`,
+              [boardId]
+            );
+
+            socket.emit("board_state", {
+              success: true,
+              data: { pawns },
+            });
+          } finally {
+            connection.release();
+          }
+        } catch (error) {
+          console.error("Error joining board:", error);
+          socket.emit("error", { message: "Failed to join board" });
+        }
+      });
+
+      // Leave a board room
+      socket.on("leave_board", (data) => {
+        const { boardId } = data;
+        if (boardId) {
+          socket.leave(`board:${boardId}`);
+          console.log(`❌ Socket ${socket.id} left board: ${boardId}`);
+        }
+      });
+
+      // // Handle dice roll (optional - can be used for real-time dice)
+      // socket.on("dice_roll", (data) => {
+      //   const { boardId, playerId, diceNumber } = data;
+      //   if (boardId && playerId) {
+      //     socket.to(`board:${boardId}`).emit("dice_rolled", {
+      //       playerId,
+      //       diceNumber,
+      //     });
+      //   }
+      // });
+
+
+        // ✅ New socket-based move handler
+    socket.on("move_pawn", async (data) => {
+      try {
+        const result = await movePawnFromSocket(data, io, socket);
+        if (!result.success) {
+          socket.emit("error", result);
         }
       } catch (error) {
-        console.error("Error joining board:", error);
-        socket.emit("error", { message: "Failed to join board" });
+        console.error("Socket move_pawn error:", error);
+        socket.emit("error", { message: "Move failed" });
       }
     });
 
-    // Leave a board room
-    socket.on("leave_board", (data) => {
-      const { boardId } = data;
-      if (boardId) {
-        socket.leave(`board:${boardId}`);
-        console.log(`❌ Socket ${socket.id} left board: ${boardId}`);
+      // Handle disconnect
+      socket.on("disconnect", () => {
+        console.log(`🔌 Client disconnected: ${socket.id}`);
+      });
+    });
+  };
+
+
+  // Function to emit board state update to all clients in a board room
+  export const emitBoardUpdate = async (boardId, payload = {}) => {
+    if (!ioInstance) return;
+
+    const { pawns: providedPawns, ...rest } = payload;
+    let pawns = providedPawns;
+    let connection = null;
+
+    try {
+      if (!pawns) {
+        connection = await db.getConnection();
+        const [rows] = await connection.execute(
+          `SELECT * FROM pawns WHERE boardId = ? ORDER BY playerId, id`,
+          [boardId]
+        );
+        pawns = rows;
       }
-    });
 
-    // // Handle dice roll (optional - can be used for real-time dice)
-    // socket.on("dice_roll", (data) => {
-    //   const { boardId, playerId, diceNumber } = data;
-    //   if (boardId && playerId) {
-    //     socket.to(`board:${boardId}`).emit("dice_rolled", {
-    //       playerId,
-    //       diceNumber,
-    //     });
-    //   }
-    // });
-
-    // Handle disconnect
-    socket.on("disconnect", () => {
-      console.log(`🔌 Client disconnected: ${socket.id}`);
-    });
-  });
-};
-
-
-// Function to emit board state update to all clients in a board room
-export const emitBoardUpdate = async (boardId, payload = {}) => {
-  if (!ioInstance) return;
-
-  const { pawns: providedPawns, ...rest } = payload;
-  let pawns = providedPawns;
-  let connection = null;
-
-  try {
-    if (!pawns) {
-      connection = await db.getConnection();
-      const [rows] = await connection.execute(
-        `SELECT * FROM pawns WHERE boardId = ? ORDER BY playerId, id`,
-        [boardId]
-      );
-      pawns = rows;
+      ioInstance.to(`board:${boardId}`).emit("board_update", {
+        success: true,
+        data: {
+          pawns,
+          ...rest,
+        },
+      });
+    } catch (error) {
+      console.error("Error emitting board update:", error);
+    } finally {
+      if (connection) connection.release();
     }
-
-    ioInstance.to(`board:${boardId}`).emit("board_update", {
-      success: true,
-      data: {
-        pawns,
-        ...rest,
-      },
-    });
-  } catch (error) {
-    console.error("Error emitting board update:", error);
-  } finally {
-    if (connection) connection.release();
-  }
-};
+  };
 
 // Function to emit game event (winner, game end, etc.)
 export const emitGameEvent = (boardId, eventType, eventData) => {
