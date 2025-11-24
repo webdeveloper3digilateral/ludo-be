@@ -12,6 +12,7 @@ import {
   downloadUploadImageForMr,
   viewUploadImageForMr
 } from "../controllers/mrController.js";
+import { getAllActivityTypes } from "../controllers/adminController.js";
 
 const router = express.Router();
 
@@ -46,6 +47,7 @@ router.post("/upload/:mrId", upload.single("uploadImage"), uploadFile);
 // router.post("/uploadPrescription/:mrId", upload.single("prescriptionImage"), uploadPrescription);
 router.get("/brands", getBrands);
 router.get("/camps", getCamps);
+router.get("/activity-types", getAllActivityTypes);
 router.get("/:mrId/uploads/rejected/:uploadId", getRejectedUploadsById);
 router.get("/:mrId/uploads/rejected", getRejectedUploads);
 router.put("/:mrId/uploads/:uploadId/resubmit",upload.single("uploadImage"),resubmitUploads);

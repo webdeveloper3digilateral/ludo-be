@@ -1,6 +1,6 @@
 CREATE TABLE `moveLogs` (
   `id` varchar(36) NOT NULL DEFAULT (uuid()),
-  `boardId` varchar(36) NOT NULL,
+  `boardId` int NOT NULL,
   `playerId` varchar(255) NOT NULL,
   `pawnId` varchar(36) NOT NULL,
   `diceValue` int DEFAULT NULL,

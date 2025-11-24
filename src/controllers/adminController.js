@@ -173,13 +173,12 @@ export const startGame = async (req, res) => {
       const p3 = rawP3 ?? null;
       const p4 = rawP4 ?? null;
 
-      const boardId = crypto.randomUUID();
-
-      await connection.execute(
-        `INSERT INTO boards (id, player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, expirationDate)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)`,
-        [boardId, p1, p2, p3, p4, adminId, creationMode, numberOfPawnsUnlocked]
+      const [boardResult] = await connection.execute(
+        `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, expirationDate)
+         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL)`,
+        [p1, p2, p3, p4, adminId, creationMode, numberOfPawnsUnlocked]
       );
+      const boardId = boardResult.insertId;
 
       const players = [p1, p2, p3, p4].filter(player => player !== null && player !== undefined);
 
@@ -925,7 +924,7 @@ export const getAllCamps = async (req, res) => {
 //     await connection.beginTransaction();
 
 //     await connection.execute(
-//       `INSERT INTO moveAdjustmentConfigs (medianValue, lessMedianFactor, greaterMedianFactor)
+//       `INSERT INTO config (medianValue, lessMedianFactor, greaterMedianFactor)
 //        VALUES (?, ?, ?)`,
 //       [median, lessFactor, greaterFactor]
 //     );
@@ -998,10 +997,10 @@ export const getAllCamps = async (req, res) => {
 
 
 
-export const addMoveAdjustmentConfig = async (req, res) => {
+export const config = async (req, res) => {
   const connection = await db.getConnection();
   try {
-    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio } = req.body;
+    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts } = req.body;
 
     if (
       medianValue === undefined ||
@@ -1019,24 +1018,27 @@ export const addMoveAdjustmentConfig = async (req, res) => {
     const lessFactor = Number(lessMedianFactor);
     const greaterFactor = Number(greaterMedianFactor);
     const pointToDiceRoll = Number(pointToDiceRollRatio);
+    const diceRollsToHeartsValue = diceRollsToHearts !== undefined ? Number(diceRollsToHearts) : 5;
+    
     if (
       Number.isNaN(median) ||
       Number.isNaN(lessFactor) ||
       Number.isNaN(greaterFactor) ||
-      Number.isNaN(pointToDiceRoll)
+      Number.isNaN(pointToDiceRoll) ||
+      (diceRollsToHearts !== undefined && Number.isNaN(diceRollsToHeartsValue))
     ) {
       return res.status(400).json({
         success: false,
-        message: "medianValue, lessMedianFactor, greaterMedianFactor, and pointToDiceRollRatio must be valid numbers",
+        message: "medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, and diceRollsToHearts (if provided) must be valid numbers",
       });
     }
 
     await connection.beginTransaction();
 
     await connection.execute(
-      `INSERT INTO moveAdjustmentConfigs (medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio)
-       VALUES (?, ?, ?, ?)`,
-      [median, lessFactor, greaterFactor, pointToDiceRoll]
+      `INSERT INTO config (medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts)
+       VALUES (?, ?, ?, ?, ?)`,
+      [median, lessFactor, greaterFactor, pointToDiceRoll, diceRollsToHeartsValue]
     );
 
     await connection.commit();
@@ -1049,6 +1051,7 @@ export const addMoveAdjustmentConfig = async (req, res) => {
         lessMedianFactor: lessFactor,
         greaterMedianFactor: greaterFactor,
         pointToDiceRollRatio: pointToDiceRoll,
+        diceRollsToHearts: diceRollsToHeartsValue,
       },
     });
   } catch (error) {
@@ -1244,13 +1247,12 @@ export const startGameWithExpiration = async (req, res) => {
       const p3 = rawP3 ?? null;
       const p4 = rawP4 ?? null;
 
-      const boardId = crypto.randomUUID();
-
-      await connection.execute(
-        `INSERT INTO boards (id, player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, expirationDate)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-        [boardId, p1, p2, p3, p4, adminId, creationMode, numberOfPawnsUnlocked, expirationDateIST]
+      const [boardResult] = await connection.execute(
+        `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, expirationDate)
+         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+        [p1, p2, p3, p4, adminId, creationMode, numberOfPawnsUnlocked, expirationDateIST]
       );
+      const boardId = boardResult.insertId;
 
       const players = [p1, p2, p3, p4].filter(player => player !== null && player !== undefined);
 
@@ -1693,10 +1695,10 @@ export const givePoints = async (req, res) => {
       recipientName = tlmRows[0].tlmName;
     }
 
-    // Get pointToDiceRollRatio from moveAdjustmentConfigs
+    // Get pointToDiceRollRatio from config
     const [configRows] = await connection.execute(
       `SELECT pointToDiceRollRatio
-       FROM moveAdjustmentConfigs
+       FROM config
        WHERE pointToDiceRollRatio IS NOT NULL
        ORDER BY createdAt DESC
        LIMIT 1`
@@ -1894,14 +1896,14 @@ export const startManualGame = async(req,res) => {
     }
 
     // Create board
-    const boardId = crypto.randomUUID();
     const [p1, p2, p3, p4] = players;
     
-    await connection.execute(
-      `INSERT INTO boards (id, player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, startTime, expirationDate)
-       VALUES (?, ?, ?, ?, ?, ?, 'manual', 'active', ?, ?, ?)`,
-      [boardId, p1, p2, p3 || null, p4 || null, adminId, pawnsUnlocked, startTimeIST, expirationDateIST]
+    const [boardResult] = await connection.execute(
+      `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, startTime, expirationDate)
+       VALUES (?, ?, ?, ?, ?, 'manual', 'active', ?, ?, ?)`,
+      [p1, p2, p3 || null, p4 || null, adminId, pawnsUnlocked, startTimeIST, expirationDateIST]
     );
+    const boardId = boardResult.insertId;
 
     // Create pawns for all players
     const pawnColors = ["blue", "red", "green", "yellow"];
@@ -1981,6 +1983,820 @@ export const startManualGame = async(req,res) => {
     if (connection) connection.release();
   }
 }
+
+// Upload Types management functions
+export const createUploadType = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { typeName, folderName, requiresBrand, requiresCamp, isActive, displayOrder } = req.body;
+
+    if (!typeName) {
+      return res.status(400).json({
+        success: false,
+        message: "Type name is required",
+      });
+    }
+
+    if (!folderName) {
+      return res.status(400).json({
+        success: false,
+        message: "Folder name is required",
+      });
+    }
+
+    // Check if upload type already exists
+    const [existingRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE typeName = ?",
+      [typeName.toLowerCase()]
+    );
+
+    if (existingRows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Upload type with this name already exists",
+      });
+    }
+
+    await connection.beginTransaction();
+
+    const uploadTypeId = crypto.randomUUID();
+    const istDateTimeString = formatISTDateTimeForSQL();
+    const normalizedTypeName = typeName.toLowerCase();
+
+    await connection.execute(
+      `INSERT INTO activityTypes (id, typeName, folderName, requiresBrand, requiresCamp, isActive, displayOrder, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        uploadTypeId,
+        normalizedTypeName,
+        folderName,
+        requiresBrand ? 1 : 0,
+        requiresCamp ? 1 : 0,
+        isActive !== undefined ? (isActive ? 1 : 0) : 1,
+        displayOrder ? parseInt(displayOrder) : 0,
+        istDateTimeString,
+        istDateTimeString,
+      ]
+    );
+
+    await connection.commit();
+
+    res.status(201).json({
+      success: true,
+      message: "Upload type created successfully",
+      data: {
+        id: uploadTypeId,
+        typeName: normalizedTypeName,
+        folderName,
+        requiresBrand: requiresBrand ? true : false,
+        requiresCamp: requiresCamp ? true : false,
+        isActive: isActive !== undefined ? (isActive ? true : false) : true,
+        displayOrder: displayOrder ? parseInt(displayOrder) : 0,
+      },
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error creating upload type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const updateUploadType = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { id } = req.params;
+    const { typeName, folderName, requiresBrand, requiresCamp, isActive, displayOrder } = req.body;
+
+    // Check if upload type exists
+    const [uploadTypeRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE id = ?",
+      [id]
+    );
+
+    if (uploadTypeRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Upload type not found",
+      });
+    }
+
+    // If typeName is being updated, check if new name already exists
+    if (typeName && typeName.toLowerCase() !== uploadTypeRows[0].typeName) {
+      const [existingRows] = await connection.execute(
+        "SELECT * FROM activityTypes WHERE typeName = ? AND id != ?",
+        [typeName.toLowerCase(), id]
+      );
+
+      if (existingRows.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Upload type with this name already exists",
+        });
+      }
+    }
+
+    await connection.beginTransaction();
+
+    // Build update query dynamically
+    const updates = [];
+    const values = [];
+
+    if (typeName !== undefined) {
+      updates.push("typeName = ?");
+      values.push(typeName.toLowerCase());
+    }
+
+    if (folderName !== undefined) {
+      updates.push("folderName = ?");
+      values.push(folderName);
+    }
+
+    if (requiresBrand !== undefined) {
+      updates.push("requiresBrand = ?");
+      values.push(requiresBrand ? 1 : 0);
+    }
+
+    if (requiresCamp !== undefined) {
+      updates.push("requiresCamp = ?");
+      values.push(requiresCamp ? 1 : 0);
+    }
+
+    if (isActive !== undefined) {
+      updates.push("isActive = ?");
+      values.push(isActive ? 1 : 0);
+    }
+
+    if (displayOrder !== undefined) {
+      updates.push("displayOrder = ?");
+      values.push(parseInt(displayOrder) || 0);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No fields to update",
+      });
+    }
+
+    // Always update updatedAt with IST time
+    const istDateTimeString = formatISTDateTimeForSQL();
+    updates.push("updatedAt = ?");
+    values.push(istDateTimeString);
+    values.push(id);
+
+    await connection.execute(
+      `UPDATE activityTypes SET ${updates.join(", ")} WHERE id = ?`,
+      values
+    );
+
+    await connection.commit();
+
+    // Fetch updated upload type
+    const [updatedRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE id = ?",
+      [id]
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Upload type updated successfully",
+      data: updatedRows[0],
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error updating upload type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const getUploadTypeById = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [uploadTypeRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE id = ?",
+      [id]
+    );
+
+    if (uploadTypeRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Upload type not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: uploadTypeRows[0],
+    });
+  } catch (error) {
+    console.error("Error fetching upload type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const getAllUploadTypes = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { isActive, search } = req.query;
+
+    let query = "SELECT * FROM activityTypes WHERE 1=1";
+    const params = [];
+
+    if (isActive !== undefined) {
+      query += " AND isActive = ?";
+      params.push(isActive === "true" ? 1 : 0);
+    }
+
+    if (search) {
+      query += " AND (typeName LIKE ? OR folderName LIKE ?)";
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    query += " ORDER BY displayOrder ASC, typeName ASC";
+
+    const [uploadTypes] = await connection.execute(query, params);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        uploadTypes,
+        total: uploadTypes.length,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching upload types:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const deleteUploadType = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    // Check if upload type exists
+    const [uploadTypeRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE id = ?",
+      [id]
+    );
+
+    if (uploadTypeRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Upload type not found",
+      });
+    }
+
+    // Check if there are any uploads using this type
+    const [uploadRows] = await connection.execute(
+      "SELECT COUNT(*) as count FROM uploads WHERE type = ?",
+      [uploadTypeRows[0].typeName]
+    );
+
+    if (uploadRows[0].count > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete upload type. There are ${uploadRows[0].count} upload(s) using this type.`,
+      });
+    }
+
+    await connection.beginTransaction();
+
+    await connection.execute("DELETE FROM activityTypes WHERE id = ?", [id]);
+
+    await connection.commit();
+
+    res.status(200).json({
+      success: true,
+      message: "Upload type deleted successfully",
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error deleting upload type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+// Activity Types management functions (new APIs with activitySpecificFields support)
+export const createActivityType = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { typeName, folderName, activitySpecificFields, isActive, displayOrder } = req.body;
+
+    if (!typeName) {
+      return res.status(400).json({
+        success: false,
+        message: "Type name is required",
+      });
+    }
+
+    if (!folderName) {
+      return res.status(400).json({
+        success: false,
+        message: "Folder name is required",
+      });
+    }
+
+    // Check if activity type already exists
+    const [existingRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE typeName = ?",
+      [typeName.toLowerCase()]
+    );
+
+    if (existingRows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Activity type with this name already exists",
+      });
+    }
+
+    await connection.beginTransaction();
+
+    const activityTypeId = crypto.randomUUID();
+    const istDateTimeString = formatISTDateTimeForSQL();
+    const normalizedTypeName = typeName.toLowerCase();
+
+    // Handle activitySpecificFields - convert to JSON string if provided
+    // Expected format: [{fieldName: "campname", type: "string", required: true}, ...]
+    let activitySpecificFieldsJson = null;
+    if (activitySpecificFields !== undefined && activitySpecificFields !== null) {
+      let parsedFields = null;
+      
+      if (typeof activitySpecificFields === 'string') {
+        try {
+          parsedFields = JSON.parse(activitySpecificFields);
+        } catch (e) {
+          return res.status(400).json({
+            success: false,
+            message: "activitySpecificFields must be valid JSON",
+          });
+        }
+      } else {
+        parsedFields = activitySpecificFields;
+      }
+
+      // Validate structure: should be an array of field definitions
+      if (!Array.isArray(parsedFields)) {
+        return res.status(400).json({
+          success: false,
+          message: "activitySpecificFields must be an array of field definitions",
+        });
+      }
+
+      // Validate each field definition
+      for (let i = 0; i < parsedFields.length; i++) {
+        const field = parsedFields[i];
+        if (!field.fieldName || typeof field.fieldName !== 'string') {
+          return res.status(400).json({
+            success: false,
+            message: `activitySpecificFields[${i}]: fieldName is required and must be a string`,
+          });
+        }
+        if (!field.type || typeof field.type !== 'string') {
+          return res.status(400).json({
+            success: false,
+            message: `activitySpecificFields[${i}]: type is required and must be a string`,
+          });
+        }
+        if (field.required !== undefined && typeof field.required !== 'boolean') {
+          return res.status(400).json({
+            success: false,
+            message: `activitySpecificFields[${i}]: required must be a boolean`,
+          });
+        }
+      }
+
+      activitySpecificFieldsJson = JSON.stringify(parsedFields);
+    }
+
+    await connection.execute(
+      `INSERT INTO activityTypes (id, typeName, folderName, activitySpecificFields, isActive, displayOrder, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        activityTypeId,
+        normalizedTypeName,
+        folderName,
+       
+        activitySpecificFieldsJson,
+        isActive !== undefined ? (isActive ? 1 : 0) : 1,
+        displayOrder ? parseInt(displayOrder) : 0,
+        istDateTimeString,
+        istDateTimeString,
+      ]
+    );
+
+    await connection.commit();
+
+    // Parse activitySpecificFields for response
+    let parsedActivitySpecificFields = null;
+    if (activitySpecificFieldsJson) {
+      try {
+        parsedActivitySpecificFields = JSON.parse(activitySpecificFieldsJson);
+      } catch (e) {
+        parsedActivitySpecificFields = activitySpecificFieldsJson;
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Activity type created successfully",
+      data: {
+        id: activityTypeId,
+        typeName: normalizedTypeName,
+        folderName,
+       
+        activitySpecificFields: parsedActivitySpecificFields,
+        isActive: isActive !== undefined ? (isActive ? true : false) : true,
+        displayOrder: displayOrder ? parseInt(displayOrder) : 0,
+      },
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error creating activity type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const updateActivityType = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { id } = req.params;
+    const { typeName, folderName, requiresBrand, requiresCamp, activitySpecificFields, isActive, displayOrder } = req.body;
+
+    // Check if activity type exists
+    const [activityTypeRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE id = ?",
+      [id]
+    );
+
+    if (activityTypeRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Activity type not found",
+      });
+    }
+
+    // If typeName is being updated, check if new name already exists
+    if (typeName && typeName.toLowerCase() !== activityTypeRows[0].typeName) {
+      const [existingRows] = await connection.execute(
+        "SELECT * FROM activityTypes WHERE typeName = ? AND id != ?",
+        [typeName.toLowerCase(), id]
+      );
+
+      if (existingRows.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Activity type with this name already exists",
+        });
+      }
+    }
+
+    await connection.beginTransaction();
+
+    // Build update query dynamically
+    const updates = [];
+    const values = [];
+
+    if (typeName !== undefined) {
+      updates.push("typeName = ?");
+      values.push(typeName.toLowerCase());
+    }
+
+    if (folderName !== undefined) {
+      updates.push("folderName = ?");
+      values.push(folderName);
+    }
+
+    if (requiresBrand !== undefined) {
+      updates.push("requiresBrand = ?");
+      values.push(requiresBrand ? 1 : 0);
+    }
+
+    if (requiresCamp !== undefined) {
+      updates.push("requiresCamp = ?");
+      values.push(requiresCamp ? 1 : 0);
+    }
+
+    if (activitySpecificFields !== undefined) {
+      let activitySpecificFieldsJson = null;
+      if (activitySpecificFields !== null) {
+        let parsedFields = null;
+        
+        if (typeof activitySpecificFields === 'string') {
+          try {
+            parsedFields = JSON.parse(activitySpecificFields);
+          } catch (e) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: "activitySpecificFields must be valid JSON",
+            });
+          }
+        } else {
+          parsedFields = activitySpecificFields;
+        }
+
+        // Validate structure: should be an array of field definitions
+        if (!Array.isArray(parsedFields)) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: "activitySpecificFields must be an array of field definitions",
+          });
+        }
+
+        // Validate each field definition
+        for (let i = 0; i < parsedFields.length; i++) {
+          const field = parsedFields[i];
+          if (!field.fieldName || typeof field.fieldName !== 'string') {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: `activitySpecificFields[${i}]: fieldName is required and must be a string`,
+            });
+          }
+          if (!field.type || typeof field.type !== 'string') {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: `activitySpecificFields[${i}]: type is required and must be a string`,
+            });
+          }
+          if (field.required !== undefined && typeof field.required !== 'boolean') {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: `activitySpecificFields[${i}]: required must be a boolean`,
+            });
+          }
+        }
+
+        activitySpecificFieldsJson = JSON.stringify(parsedFields);
+      }
+      updates.push("activitySpecificFields = ?");
+      values.push(activitySpecificFieldsJson);
+    }
+
+    if (isActive !== undefined) {
+      updates.push("isActive = ?");
+      values.push(isActive ? 1 : 0);
+    }
+
+    if (displayOrder !== undefined) {
+      updates.push("displayOrder = ?");
+      values.push(parseInt(displayOrder) || 0);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No fields to update",
+      });
+    }
+
+    // Always update updatedAt with IST time
+    const istDateTimeString = formatISTDateTimeForSQL();
+    updates.push("updatedAt = ?");
+    values.push(istDateTimeString);
+    values.push(id);
+
+    await connection.execute(
+      `UPDATE activityTypes SET ${updates.join(", ")} WHERE id = ?`,
+      values
+    );
+
+    await connection.commit();
+
+    // Fetch updated activity type
+    const [updatedRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE id = ?",
+      [id]
+    );
+
+    // Parse activitySpecificFields for response
+    const updatedType = updatedRows[0];
+    if (updatedType.activitySpecificFields) {
+      try {
+        updatedType.activitySpecificFields = JSON.parse(updatedType.activitySpecificFields);
+      } catch (e) {
+        // Keep as string if parsing fails
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Activity type updated successfully",
+      data: updatedType,
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error updating activity type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const getActivityTypeById = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    const [activityTypeRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE id = ?",
+      [id]
+    );
+
+    if (activityTypeRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Activity type not found",
+      });
+    }
+
+    // Parse activitySpecificFields for response
+    const activityType = activityTypeRows[0];
+    if (activityType.activitySpecificFields) {
+      try {
+        activityType.activitySpecificFields = JSON.parse(activityType.activitySpecificFields);
+      } catch (e) {
+        // Keep as string if parsing fails
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: activityType,
+    });
+  } catch (error) {
+    console.error("Error fetching activity type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const getAllActivityTypes = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { isActive, search } = req.query;
+
+    let query = "SELECT * FROM activityTypes WHERE 1=1";
+    const params = [];
+
+    if (isActive !== undefined) {
+      query += " AND isActive = ?";
+      params.push(isActive === "true" ? 1 : 0);
+    }
+
+    if (search) {
+      query += " AND (typeName LIKE ? OR folderName LIKE ?)";
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    query += " ORDER BY displayOrder ASC, typeName ASC";
+
+    const [activityTypes] = await connection.execute(query, params);
+
+    // Parse activitySpecificFields for each activity type
+    activityTypes.forEach(activityType => {
+      if (activityType.activitySpecificFields) {
+        try {
+          activityType.activitySpecificFields = JSON.parse(activityType.activitySpecificFields);
+        } catch (e) {
+          // Keep as string if parsing fails
+        }
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        activityTypes,
+        total: activityTypes.length,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching activity types:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const deleteActivityType = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { id } = req.params;
+
+    // Check if activity type exists
+    const [activityTypeRows] = await connection.execute(
+      "SELECT * FROM activityTypes WHERE id = ?",
+      [id]
+    );
+
+    if (activityTypeRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Activity type not found",
+      });
+    }
+
+    // Check if there are any uploads using this type
+    const [uploadRows] = await connection.execute(
+      "SELECT COUNT(*) as count FROM uploads WHERE type = ?",
+      [activityTypeRows[0].typeName]
+    );
+
+    if (uploadRows[0].count > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete activity type. There are ${uploadRows[0].count} upload(s) using this type.`,
+      });
+    }
+
+    await connection.beginTransaction();
+
+    await connection.execute("DELETE FROM activityTypes WHERE id = ?", [id]);
+
+    await connection.commit();
+
+    res.status(200).json({
+      success: true,
+      message: "Activity type deleted successfully",
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error deleting activity type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
 
 
 

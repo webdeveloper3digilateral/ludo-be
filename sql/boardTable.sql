@@ -1,5 +1,5 @@
 CREATE TABLE `boards` (
-  `id` varchar(36) NOT NULL DEFAULT (uuid()),
+  `id` int NOT NULL AUTO_INCREMENT,
   `player1` varchar(36) NOT NULL,
   `player2` varchar(36) NOT NULL,
   `player3` varchar(36) DEFAULT NULL,

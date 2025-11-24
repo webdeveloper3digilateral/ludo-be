@@ -3,7 +3,7 @@ CREATE TABLE `diceRolls` (
   `playerId` varchar(255) NOT NULL,
   `diceValue` int DEFAULT NULL,
   `rolledAt` timestamp(3) NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  `currentBoardId` varchar(36) DEFAULT NULL,
+  `currentBoardId` int DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `playerId` (`playerId`),
   KEY `idx_rolledAt` (`rolledAt` DESC),

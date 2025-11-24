@@ -16,24 +16,34 @@ const __dirname = path.dirname(__filename);
 // Base uploads directory
 const baseUploadsDir = path.join(__dirname, "../../uploads");
 
-// Function to get type-specific upload directory
-const getUploadsDir = (type) => {
-  const typeDir = type === "prescription" ? "prescriptions" : type === "pob" ? "pob" : "camps";
-  const uploadsDir = path.join(baseUploadsDir, typeDir);
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
+// Function to get type-specific upload directory from database
+const getUploadsDir = async (type) => {
+  const connection = await db.getConnection();
+  try {
+    const [typeRows] = await connection.execute(
+      "SELECT folderName FROM uploadTypes WHERE typeName = ? AND isActive = 1",
+      [type.toLowerCase()]
+    );
+    
+    if (typeRows.length === 0) {
+      // Fallback to type name if not found in database
+      const typeDir = type.toLowerCase();
+      const uploadsDir = path.join(baseUploadsDir, typeDir);
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+      return uploadsDir;
+    }
+    
+    const folderName = typeRows[0].folderName;
+    const uploadsDir = path.join(baseUploadsDir, folderName);
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    return uploadsDir;
+  } finally {
+    connection.release();
   }
-  return uploadsDir;
-};
-
-// Capitalize first letter of each word
-const capitalizeWords = (text) => {
-  if (!text || typeof text !== 'string') return text;
-  return text
-    .trim()
-    .split(/\s+/)
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(' ');
 };
 
 const formatDoctorName = (name) => {
@@ -42,9 +52,7 @@ const formatDoctorName = (name) => {
   if (!raw) return null;
   const withoutPrefix = raw.replace(/^dr\.?\s*/i, "").trim();
   if (!withoutPrefix) return null;
-  // Capitalize the name and add Dr. prefix
-  const capitalizedName = capitalizeWords(withoutPrefix);
-  return `Dr. ${capitalizedName}`.trim();
+  return `Dr. ${withoutPrefix}`.trim();
 };
 
 // Unified upload function for all types (prescription, pob, camp)
@@ -72,30 +80,43 @@ export const uploadFile = async (req, res) => {
       noOfCamps,
     } = req.body;
 
-    // Validate type
-    if (!type || !["prescription", "pob", "camp"].includes(type.toLowerCase())) {
+    // Validate type - fetch from database
+    if (!type) {
       return res.status(400).json({
         success: false,
-        message: "Invalid type. Must be 'prescription', 'pob', or 'camp'",
+        message: "Type is required",
       });
     }
 
     const normalizedType = type.toLowerCase();
+    
+    // Check if type exists in database
+    const [typeRows] = await connection.execute(
+      "SELECT * FROM uploadTypes WHERE typeName = ? AND isActive = 1",
+      [normalizedType]
+    );
 
-    // Type-specific validation
+    if (typeRows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid upload type. Please check available types.",
+      });
+    }
+
+    const uploadType = typeRows[0];
+
+    // Type-specific validation based on upload type configuration
     const missingFields = [];
 
-    if (normalizedType === "prescription") {
-      if (!brandName) missingFields.push("brandName");
-      if (!noRxns) missingFields.push("noRxns");
-      if (!drName) missingFields.push("drName");
-      if (!scCode) missingFields.push("scCode");
-    } else if (normalizedType === "pob") {
+    if (uploadType.requiresBrand) {
       if (!brandName) missingFields.push("brandName");
       if (!drName) missingFields.push("drName");
       if (!scCode) missingFields.push("scCode");
-      // Note: noOfUnits or allValue validation will be done after brand is fetched
-    } else if (normalizedType === "camp") {
+      // For prescription-like types, check if noRxns is required
+      // This can be extended based on additional type configuration
+    }
+
+    if (uploadType.requiresCamp) {
       if (!campName) missingFields.push("campName");
       if (!noOfCamps) missingFields.push("noOfCamps");
       if (!drName) missingFields.push("drName");
@@ -128,11 +149,9 @@ export const uploadFile = async (req, res) => {
     let campNameValue = null;
     let campDefaultFactor = null;
 
-    // Handle brand-based types (prescription, pob)
-    if (normalizedType === "prescription" || normalizedType === "pob") {
-      // Trim and normalize brandName for case-insensitive matching
-      const normalizedBrandName = brandName ? brandName.trim() : "";
-      const [brandRows] = await connection.execute("SELECT * FROM brands WHERE LOWER(TRIM(brandName)) = LOWER(TRIM(?))", [normalizedBrandName]);
+    // Handle brand-based types
+    if (uploadType.requiresBrand) {
+      const [brandRows] = await connection.execute("SELECT * FROM brands WHERE brandName = ?", [brandName]);
 
       if (brandRows.length === 0) {
         return res.status(404).json({
@@ -198,11 +217,10 @@ export const uploadFile = async (req, res) => {
         }
       }
     }
+
     // Handle camp type
-    if (normalizedType === "camp") {
-      // Trim and normalize campName for case-insensitive matching
-      const normalizedCampName = campName ? campName.trim() : "";
-      const [campRows] = await connection.execute("SELECT * FROM camps WHERE LOWER(TRIM(campName)) = LOWER(TRIM(?))", [normalizedCampName]);
+    if (uploadType.requiresCamp) {
+      const [campRows] = await connection.execute("SELECT * FROM camps WHERE campName = ?", [campName]);
 
       if (campRows.length === 0) {
         return res.status(404).json({
@@ -232,7 +250,7 @@ export const uploadFile = async (req, res) => {
 
     try {
       // Get type-specific upload directory
-      const typeUploadsDir = getUploadsDir(normalizedType);
+      const typeUploadsDir = await getUploadsDir(normalizedType);
       const fileExtension = path.extname(req.file.originalname) || ".jpg";
       const fileName = `${mrId}_${Date.now()}${fileExtension}`;
       const filePath = path.join(typeUploadsDir, fileName);
@@ -241,7 +259,7 @@ export const uploadFile = async (req, res) => {
       fs.writeFileSync(filePath, req.file.buffer);
       
       // Store path with type-specific folder
-      const folderName = normalizedType === "prescription" ? "prescriptions" : normalizedType === "pob" ? "pob" : "camps";
+      const folderName = uploadType.folderName;
       uploadImagePath = `/uploads/${folderName}/${fileName}`;
 
       // console.log("File saved successfully:", {
@@ -285,57 +303,51 @@ export const uploadFile = async (req, res) => {
     insertValues.push(uploadId, normalizedType, mrId, uploadImagePath, formattedDate, formattedTime, totalPoints, 0, "pending", 0, istDateTimeString, istDateTimeString);
     placeholders.push("?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?");
 
-    // Common fields that exist in the table
-    insertFields.push("drName", "speciality", "mobNo", "scCode");
-    insertValues.push(
-      formattedDrName,
-      speciality || null,
-      mobNo || null,
-      scCode || null
-    );
-    placeholders.push("?", "?", "?", "?");
-
-    // Build activitySpecificDetails JSON object for type-specific fields
-    let activitySpecificDetails = {};
-
+    // Type-specific fields
     if (normalizedType === "prescription") {
-      activitySpecificDetails = {
-        brandId: brandId,
-        brandName: brandNameValue,
-        noRxns: parseInt(noRxns) || 1,
-        // rxnDuration uses brand's defaultRxnDuration (mapped to defaultFactor in UI)
-        rxnDuration: parseInt(brand.defaultRxnDuration) || 1
-      };
+      insertFields.push("brandId", "brandName", "drName", "speciality", "mobNo", "scCode", "noRxns", "rxnDuration");
+      insertValues.push(
+        brandId,
+        brandNameValue,
+        formattedDrName,
+        speciality || null,
+        mobNo || null,
+        scCode || null,
+        parseInt(noRxns) || 1,
+        rxnDuration ? parseInt(rxnDuration) : parseInt(brand.defaultRxnDuration) || 1
+      );
+      placeholders.push("?", "?", "?", "?", "?", "?", "?", "?");
     } else if (normalizedType === "pob") {
-      activitySpecificDetails = {
-        brandId: brandId,
-        brandName: brandNameValue,
-        chemistName: chemistName ? capitalizeWords(chemistName) : null,
-        noOfUnits: noOfUnits ? parseInt(noOfUnits) : null,
-        allValue: allValue ? parseInt(allValue) : null,
-        // rxnDuration uses brand's defaultRxnDuration (mapped to defaultFactor in UI)
-        rxnDuration: parseInt(brand.defaultRxnDuration) || 1
-      };
+      insertFields.push("brandId", "brandName", "drName", "speciality", "mobNo", "scCode", "chemistName", "noOfUnits", "allValue", "rxnDuration");
+      insertValues.push(
+        brandId,
+        brandNameValue,
+        formattedDrName,
+        speciality || null,
+        mobNo || null,
+        scCode || null,
+        chemistName || null,
+        noOfUnits ? parseInt(noOfUnits) : null,
+        allValue ? parseInt(allValue) : null,
+        rxnDuration ? parseInt(rxnDuration) : parseInt(brand.defaultRxnDuration) || 1
+      );
+      placeholders.push("?", "?", "?", "?", "?", "?", "?", "?", "?", "?");
     } else if (normalizedType === "camp") {
-      activitySpecificDetails = {
-        campId: campId,
-        campName: campNameValue,
-        noOfCamps: parseInt(noOfCamps) || 1,
-        campDefaultFactor: campDefaultFactor
-      };
+      insertFields.push("campId", "campName", "drName", "speciality", "mobNo", "scCode", "noOfCamps", "campDefaultFactor");
+      insertValues.push(
+        campId,
+        campNameValue,
+        formattedDrName,
+        speciality || null,
+        mobNo || null,
+        scCode || null,
+        parseInt(noOfCamps) || 1,
+        campDefaultFactor
+      );
+      placeholders.push("?", "?", "?", "?", "?", "?", "?", "?");
     }
 
-    // Add activitySpecificDetails as JSON
-    insertFields.push("activitySpecificDetails");
-    insertValues.push(JSON.stringify(activitySpecificDetails));
-    placeholders.push("?");
-
     const insertQuery = `INSERT INTO uploads (${insertFields.join(", ")}) VALUES (${placeholders.join(", ")})`;
-
-    // Debug: Log the query to verify it's correct (remove in production)
-    // console.log("Insert Query:", insertQuery);
-    // console.log("Insert Fields:", insertFields);
-    // console.log("Activity Specific Details:", JSON.stringify(activitySpecificDetails));
 
     await connection.execute(insertQuery, insertValues);
 
@@ -983,7 +995,7 @@ export const getMyPrescriptions = async (req, res) => {
     let query = `
       SELECT p.*, b.points as brandPoints
       FROM uploads p
-      LEFT JOIN brands b ON JSON_UNQUOTE(JSON_EXTRACT(p.activitySpecificDetails, '$.brandId')) = b.id
+      LEFT JOIN brands b ON p.brandId = b.id
       WHERE p.type = 'prescription'
         AND p.mrId = ?
     `;
@@ -1027,33 +1039,10 @@ export const getMyPrescriptions = async (req, res) => {
     const [countRows] = await connection.execute(countQuery, countParams);
     const total = countRows[0].total;
 
-    // Flatten activitySpecificDetails to top level for frontend compatibility
-    const flattenedPrescriptions = prescriptions.map(prescription => {
-      if (prescription.activitySpecificDetails) {
-        try {
-          const activityDetails = typeof prescription.activitySpecificDetails === 'string' 
-            ? JSON.parse(prescription.activitySpecificDetails) 
-            : prescription.activitySpecificDetails;
-          
-          if (activityDetails) {
-            return {
-              ...prescription,
-              ...activityDetails,
-              // Keep activitySpecificDetails for reference
-              activitySpecificDetails: activityDetails
-            };
-          }
-        } catch (error) {
-          console.error("Error parsing activitySpecificDetails:", error);
-        }
-      }
-      return prescription;
-    });
-
     res.status(200).json({
       success: true,
       data: {
-        prescriptions: flattenedPrescriptions,
+        prescriptions,
         total,
         limit: parseInt(limit),
         offset: parseInt(offset),
@@ -1130,8 +1119,8 @@ export const getRejectedUploads = async (req, res) => {
               m.region AS mrRegion, 
               m.zone AS mrZone
        FROM uploads p
-       LEFT JOIN brands b ON JSON_UNQUOTE(JSON_EXTRACT(p.activitySpecificDetails, '$.brandId')) = b.id
-       LEFT JOIN camps c ON JSON_UNQUOTE(JSON_EXTRACT(p.activitySpecificDetails, '$.campId')) = c.id
+       LEFT JOIN brands b ON p.brandId = b.id
+       LEFT JOIN camps c ON p.campId = c.id
        JOIN mrs m ON p.mrId = m.mrId
        WHERE p.mrId = ? AND p.status = 'rejected'
        ${typeClause}
@@ -1140,33 +1129,10 @@ export const getRejectedUploads = async (req, res) => {
       [mrId, ...typeParams, ...dateParams]
     );
 
-    // Flatten activitySpecificDetails to top level for frontend compatibility
-    const flattenedUploads = rejectedUploads.map(upload => {
-      if (upload.activitySpecificDetails) {
-        try {
-          const activityDetails = typeof upload.activitySpecificDetails === 'string' 
-            ? JSON.parse(upload.activitySpecificDetails) 
-            : upload.activitySpecificDetails;
-          
-          if (activityDetails) {
-            return {
-              ...upload,
-              ...activityDetails,
-              // Keep activitySpecificDetails for reference
-              activitySpecificDetails: activityDetails
-            };
-          }
-        } catch (error) {
-          console.error("Error parsing activitySpecificDetails:", error);
-        }
-      }
-      return upload;
-    });
-
     res.status(200).json({
       success: true,
-      data: flattenedUploads,
-      total: flattenedUploads.length,
+      data: rejectedUploads,
+      total: rejectedUploads.length,
     });
   } catch (error) {
     console.error("Error fetching rejected prescriptions:", error);
@@ -1214,8 +1180,8 @@ export const getRejectedUploadsById = async (req, res) => {
               m.region AS mrRegion, 
               m.zone AS mrZone
        FROM uploads p
-       LEFT JOIN brands b ON JSON_UNQUOTE(JSON_EXTRACT(p.activitySpecificDetails, '$.brandId')) = b.id
-       LEFT JOIN camps c ON JSON_UNQUOTE(JSON_EXTRACT(p.activitySpecificDetails, '$.campId')) = c.id
+       LEFT JOIN brands b ON p.brandId = b.id
+       LEFT JOIN camps c ON p.campId = c.id
        JOIN mrs m ON p.mrId = m.mrId
        WHERE p.mrId = ? AND p.id = ? AND p.status = 'rejected'
        LIMIT 1`,
@@ -1230,31 +1196,10 @@ export const getRejectedUploadsById = async (req, res) => {
     }
 
     const rejectedUpload = rows[0];
-    
-    // Flatten activitySpecificDetails to top level for frontend compatibility
-    let flattenedUpload = { ...rejectedUpload };
-    if (rejectedUpload.activitySpecificDetails) {
-      try {
-        const activityDetails = typeof rejectedUpload.activitySpecificDetails === 'string' 
-          ? JSON.parse(rejectedUpload.activitySpecificDetails) 
-          : rejectedUpload.activitySpecificDetails;
-        
-        if (activityDetails) {
-          flattenedUpload = {
-            ...rejectedUpload,
-            ...activityDetails,
-            // Keep activitySpecificDetails for reference
-            activitySpecificDetails: activityDetails
-          };
-        }
-      } catch (error) {
-        console.error("Error parsing activitySpecificDetails:", error);
-      }
-    }
 
     return res.status(200).json({
       success: true,
-      data: flattenedUpload,
+      data: rejectedUpload,
     });
   } catch (error) {
     console.error("Error fetching rejected upload:", error);
@@ -1343,28 +1288,15 @@ export const resubmitUploads = async (req, res) => {
       });
     }
 
-    // Parse activitySpecificDetails from upload
-    let activityDetails = {};
-    if (upload.activitySpecificDetails) {
-      try {
-        activityDetails = typeof upload.activitySpecificDetails === 'string' 
-          ? JSON.parse(upload.activitySpecificDetails) 
-          : upload.activitySpecificDetails;
-      } catch (error) {
-        console.error("Error parsing activitySpecificDetails:", error);
-      }
-    }
-
     let brand = null;
     let camp = null;
     let totalPoints = 0;
     let updateFields = [];
     let updateValues = [];
-    let newActivitySpecificDetails = { ...activityDetails };
 
     // Handle brand-based types (prescription, pob)
     if (uploadType === "prescription" || uploadType === "pob") {
-      const targetBrandName = brandName || activityDetails.brandName;
+      const targetBrandName = brandName || upload.brandName;
       if (!targetBrandName) {
         return res.status(400).json({
           success: false,
@@ -1391,24 +1323,29 @@ export const resubmitUploads = async (req, res) => {
     const noRxnsInt =
       noRxns !== undefined && noRxns !== null && noRxns !== ""
         ? parseInt(noRxns) || 1
-            : parseInt(activityDetails.noRxns) || 1;
+            : parseInt(upload.noRxns) || 1;
 
     const rxnDurationInt =
       rxnDuration !== undefined && rxnDuration !== null && rxnDuration !== ""
         ? parseInt(rxnDuration) || 1
-            : parseInt(activityDetails.rxnDuration) ||
+            : parseInt(upload.rxnDuration) ||
           parseInt(brand.defaultRxnDuration) ||
           1;
 
         totalPoints = brandPoints * noRxnsInt * rxnDurationInt;
 
-        // Update activitySpecificDetails
-        newActivitySpecificDetails = {
-          brandId: brand.id,
-          brandName: brand.brandName || targetBrandName,
-          noRxns: noRxnsInt,
-          rxnDuration: rxnDurationInt
-        };
+        updateFields.push(
+          "brandId = ?",
+          "brandName = ?",
+          "noRxns = ?",
+          "rxnDuration = ?"
+        );
+        updateValues.push(
+          brand.id,
+          brand.brandName || targetBrandName,
+          noRxnsInt,
+          rxnDurationInt
+        );
       } else if (uploadType === "pob") {
         const brandCountType = brand.countType ? brand.countType.toLowerCase() : null;
         let noOfUnitsInt = null;
@@ -1418,12 +1355,12 @@ export const resubmitUploads = async (req, res) => {
           noOfUnitsInt =
             noOfUnits !== undefined && noOfUnits !== null && noOfUnits !== ""
               ? parseInt(noOfUnits) || 1
-              : parseInt(activityDetails.noOfUnits) || 1;
+              : parseInt(upload.noOfUnits) || 1;
 
           const rxnDurationInt =
             rxnDuration !== undefined && rxnDuration !== null && rxnDuration !== ""
               ? parseInt(rxnDuration) || 1
-              : parseInt(activityDetails.rxnDuration) ||
+              : parseInt(upload.rxnDuration) ||
                 parseInt(brand.defaultRxnDuration) ||
                 1;
 
@@ -1433,12 +1370,12 @@ export const resubmitUploads = async (req, res) => {
           allValueInt =
             allValue !== undefined && allValue !== null && allValue !== ""
               ? parseInt(allValue) || 1
-              : parseInt(activityDetails.allValue) || 1;
+              : parseInt(upload.allValue) || 1;
 
           const rxnDurationInt =
             rxnDuration !== undefined && rxnDuration !== null && rxnDuration !== ""
               ? parseInt(rxnDuration) || 1
-              : parseInt(activityDetails.rxnDuration) ||
+              : parseInt(upload.rxnDuration) ||
                 parseInt(brand.defaultRxnDuration) ||
                 1;
 
@@ -1451,12 +1388,12 @@ export const resubmitUploads = async (req, res) => {
               ? parseInt(noOfUnits) || 1
               : allValue !== undefined && allValue !== null && allValue !== ""
                 ? parseInt(allValue) || 1
-                : parseInt(activityDetails.noOfUnits || activityDetails.allValue) || 1;
+                : parseInt(upload.noOfUnits || upload.allValue) || 1;
 
           const rxnDurationInt =
             rxnDuration !== undefined && rxnDuration !== null && rxnDuration !== ""
               ? parseInt(rxnDuration) || 1
-              : parseInt(activityDetails.rxnDuration) ||
+              : parseInt(upload.rxnDuration) ||
                 parseInt(brand.defaultRxnDuration) ||
                 1;
 
@@ -1464,30 +1401,35 @@ export const resubmitUploads = async (req, res) => {
           noOfUnitsInt = valueInt;
         }
 
-        const rxnDurationInt =
+        updateFields.push(
+          "brandId = ?",
+          "brandName = ?",
+          "noOfUnits = ?",
+          "allValue = ?",
+          "rxnDuration = ?"
+        );
+        updateValues.push(
+          brand.id,
+          brand.brandName || targetBrandName,
+          noOfUnitsInt,
+          allValueInt,
           rxnDuration !== undefined && rxnDuration !== null && rxnDuration !== ""
             ? parseInt(rxnDuration) || 1
-            : parseInt(activityDetails.rxnDuration) ||
+            : parseInt(upload.rxnDuration) ||
               parseInt(brand.defaultRxnDuration) ||
-              1;
+              1
+        );
 
-        // Update activitySpecificDetails
-        newActivitySpecificDetails = {
-          brandId: brand.id,
-          brandName: brand.brandName || targetBrandName,
-          noOfUnits: noOfUnitsInt,
-          allValue: allValueInt,
-          rxnDuration: rxnDurationInt,
-          chemistName: chemistName !== undefined 
-            ? (chemistName ? capitalizeWords(chemistName) : null)
-            : (activityDetails.chemistName || null)
-        };
+        if (chemistName !== undefined) {
+          updateFields.push("chemistName = ?");
+          updateValues.push(chemistName || upload.chemistName || null);
+        }
       }
     }
 
     // Handle camp type
     if (uploadType === "camp") {
-      const targetCampName = campName || activityDetails.campName;
+      const targetCampName = campName || upload.campName;
       if (!targetCampName) {
         return res.status(400).json({
           success: false,
@@ -1513,17 +1455,20 @@ export const resubmitUploads = async (req, res) => {
       const noOfCampsInt =
         noOfCamps !== undefined && noOfCamps !== null && noOfCamps !== ""
           ? parseInt(noOfCamps) || 1
-          : parseInt(activityDetails.noOfCamps) || 1;
+          : parseInt(upload.noOfCamps) || 1;
 
       totalPoints = campPoints * noOfCampsInt * campDefaultFactor;
 
-      // Update activitySpecificDetails
-      newActivitySpecificDetails = {
-        campId: camp.id,
-        campName: camp.campName || targetCampName,
-        noOfCamps: noOfCampsInt,
-        campDefaultFactor: campDefaultFactor
-      };
+      updateFields.push(
+        "campId = ?",
+        "campName = ?",
+        "noOfCamps = ?"
+      );
+      updateValues.push(
+        camp.id,
+        camp.campName || targetCampName,
+        noOfCampsInt
+      );
     }
 
     // Handle file upload
@@ -1607,8 +1552,7 @@ export const resubmitUploads = async (req, res) => {
       "rejectionReason = NULL",
       "attempts = ?",
       "reviewDate = NULL",
-      "updatedAt = ?",
-      "activitySpecificDetails = ?"
+      "updatedAt = ?"
     );
 
     updateValues.push(
@@ -1621,8 +1565,7 @@ export const resubmitUploads = async (req, res) => {
         formattedTime,
         totalPoints,
         currentAttempts + 1,
-      istDateTimeString,
-      JSON.stringify(newActivitySpecificDetails)
+      istDateTimeString
     );
 
     const updateQuery = `

@@ -1,6 +1,6 @@
 CREATE TABLE `pawns` (
   `id` varchar(36) NOT NULL DEFAULT (uuid()),
-  `boardId` varchar(36) NOT NULL,
+  `boardId` int NOT NULL,
   `playerId` varchar(36) NOT NULL,
   `type` enum('main','base','home','center') DEFAULT NULL,
   `color` enum('red','blue','green','yellow') DEFAULT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE `pawns` (
 
 -- CREATE TABLE `pawns` (
 --   `id` varchar(36) NOT NULL DEFAULT (uuid()),
---   `boardId` varchar(36) NOT NULL,
+--   `boardId` int NOT NULL,
 --   `playerId` varchar(36) NOT NULL,
 --   `type` enum('main','base','home','center') DEFAULT NULL,
 --   `color` enum('red','blue','green','yellow') DEFAULT NULL,

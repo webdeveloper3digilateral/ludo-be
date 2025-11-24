@@ -1,9 +1,10 @@
-CREATE TABLE `moveAdjustmentConfigs` (
+CREATE TABLE `config` (
   `id` varchar(36) NOT NULL DEFAULT (uuid()),
   `medianValue` int NOT NULL,
   `lessMedianFactor` decimal(10,4) NOT NULL,
   `greaterMedianFactor` decimal(10,4) NOT NULL,
   `pointToDiceRollRatio` int DEFAULT NULL,
+  `diceRollsToHearts` int DEFAULT 5,
   `createdAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_createdAt` (`createdAt` DESC)

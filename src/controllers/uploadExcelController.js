@@ -23,7 +23,7 @@ export const handleExcelSheetUpload = async (req, res) => {
 
     const [configRows] = await db.execute(
       `SELECT pointToDiceRollRatio
-       FROM moveAdjustmentConfigs
+       FROM config
        WHERE pointToDiceRollRatio IS NOT NULL
        ORDER BY createdAt DESC
        LIMIT 1`

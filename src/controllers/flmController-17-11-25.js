@@ -2111,7 +2111,7 @@ export const reviewPrescription = async (req, res) => {
       if (points > 0) {
         const [configRows] = await connection.execute(
           `SELECT medianValue, lessMedianFactor, greaterMedianFactor
-           FROM moveAdjustmentConfigs
+           FROM config
            ORDER BY createdAt DESC
            LIMIT 1`
         );
