@@ -2207,11 +2207,11 @@ export const getPendingUploadsForFlm = async (req, res) => {
     const whereDateClause =
       dateFilters.length > 0 ? ` AND ${dateFilters.join(" AND ")}` : "";
 
-    // Build type filter clause
+    // Build type filter clause - allow any activity type dynamically
     let typeFilterClause = "";
-    if (type && ["prescription", "pob", "camp"].includes(type.toLowerCase())) {
+    if (type && type.trim()) {
       typeFilterClause = " AND p.type = ?";
-      dateParams.push(type.toLowerCase());
+      dateParams.push(type.trim());
     }
 
     const [pendingUploads] = await connection.execute(
@@ -2221,7 +2221,6 @@ export const getPendingUploadsForFlm = async (req, res) => {
        FROM uploads p
        JOIN mrs m ON p.mrId = m.mrId
        WHERE m.flmId = ?
-         AND p.status = 'pending'
           ${whereDateClause}
           ${typeFilterClause}
        ORDER BY p.updatedAt DESC, p.dateOfUpload DESC, p.timeOfUpload DESC`,
@@ -2354,6 +2353,29 @@ export const getUploadForFlm = async (req, res) => {
   }
 };
 
+// Helper function to check if FLM has active or recent (non-expired) boards
+const hasActiveOrRecentBoards = async (connection, flmId) => {
+  // Get current IST date
+  const todayDateIST = formatISTDateForSQL();
+  
+  // Check for active boards or boards that haven't expired yet
+  // A board expires when: DATE(expirationDate) + INTERVAL 1 DAY <= DATE(NOW())
+  // So a board is still valid if: DATE(expirationDate) + INTERVAL 1 DAY > DATE(NOW())
+  // Or if expirationDate is NULL (no expiration)
+  const [boardRows] = await connection.execute(
+    `SELECT id FROM boards
+     WHERE (player1 = ? OR player2 = ? OR player3 = ? OR player4 = ?)
+       AND (
+         expirationDate IS NULL 
+         OR DATE(DATE_ADD(expirationDate, INTERVAL 1 DAY)) > DATE(?)
+       )
+     LIMIT 1`,
+    [flmId, flmId, flmId, flmId, todayDateIST]
+  );
+  
+  return boardRows.length > 0;
+};
+
 export const reviewUpload = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -2397,14 +2419,6 @@ export const reviewUpload = async (req, res) => {
 
     const upload = uploadRows[0];
 
-    if (upload.status !== "pending") {
-      await connection.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Only pending uploads can be reviewed",
-      });
-    }
-
     // Parse activitySpecificDetails from upload
     let activityDetails = {};
     if (upload.activitySpecificDetails) {
@@ -2418,6 +2432,15 @@ export const reviewUpload = async (req, res) => {
     }
 
     if (action === "approve") {
+      // Only allow approving pending uploads (resubmissions)
+      // First-time uploads are already auto-approved
+      if (upload.status !== "pending") {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Only pending uploads can be approved",
+        });
+      }
       // Get IST datetime for reviewDate (always IST regardless of server timezone)
       const reviewDateIST = formatISTDateTimeForSQL();
 
@@ -2632,6 +2655,16 @@ export const reviewUpload = async (req, res) => {
         },
       });
     } else {
+      // Check if FLM has active or recent boards before allowing rejection
+      const hasActiveBoards = await hasActiveOrRecentBoards(connection, flmId);
+      if (!hasActiveBoards) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Cannot reject uploads after all boards have expired. Please wait for new boards to be created.",
+        });
+      }
+
       if (!rejectionReason || rejectionReason.toString().trim().length === 0) {
         await connection.rollback();
         return res.status(400).json({
@@ -2642,6 +2675,185 @@ export const reviewUpload = async (req, res) => {
 
       // Get IST datetime for reviewDate (always IST regardless of server timezone)
       const reviewDateIST = formatISTDateTimeForSQL();
+
+      // Check if upload was previously approved (auto-approved first-time upload)
+      // If it was approved (status = 'approved' or isCalculated = 1), subtract points and dice rolls
+      const wasPreviouslyApproved = upload.status === "approved" || upload.isCalculated === 1;
+      
+      if (wasPreviouslyApproved && upload.points > 0) {
+        const pointsToSubtract = Number(upload.points) || 0;
+        const diceRollBalanceToSubtract = Number(upload.diceRollBalance) || 0;
+
+        // Get config for move factor calculation (same as approval)
+        const [configRows] = await connection.execute(
+          `SELECT medianValue, lessMedianFactor, greaterMedianFactor
+           FROM config
+           ORDER BY createdAt DESC
+           LIMIT 1`
+        );
+
+        const config = configRows?.[0] ?? {};
+        const medianValue = Number(config.medianValue);
+        const lessMedianFactor = Number(config.lessMedianFactor);
+        const greaterMedianFactor = Number(config.greaterMedianFactor);
+
+        const [flmRows] = await connection.execute(
+          `SELECT mrCount
+           FROM flms
+           WHERE flmId = ?
+           LIMIT 1
+           FOR UPDATE`,
+          [flmId]
+        );
+
+        const mrCount = Number(flmRows?.[0]?.mrCount) || 0;
+
+        let moveFactor = 1;
+        if (Number.isFinite(medianValue)) {
+          if (mrCount < medianValue && Number.isFinite(lessMedianFactor)) {
+            moveFactor = lessMedianFactor;
+          } else if (mrCount > medianValue && Number.isFinite(greaterMedianFactor)) {
+            moveFactor = greaterMedianFactor;
+          }
+        }
+
+        const computedMoves = pointsToSubtract * moveFactor;
+        const movesToSubtract = Number.isFinite(computedMoves) ? computedMoves : pointsToSubtract;
+
+        // Subtract points and dice rolls from MR
+        await connection.execute(
+          `UPDATE mrs 
+           SET points = GREATEST(COALESCE(points, 0) - ?, 0),
+               diceRollBalance = GREATEST(COALESCE(diceRollBalance, 0) - ?, 0),
+               updatedAt = ?
+           WHERE mrId = ?`,
+          [pointsToSubtract, diceRollBalanceToSubtract, reviewDateIST, upload.mrId]
+        );
+
+        // Subtract points and dice rolls from FLM
+        await connection.execute(
+          `UPDATE flms 
+           SET points = GREATEST(COALESCE(points, 0) - ?, 0),
+               currentDiceRollBalance = GREATEST(COALESCE(currentDiceRollBalance, 0) - ?, 0),
+               updatedAt = ?
+           WHERE flmId = ?`,
+          [pointsToSubtract, movesToSubtract, reviewDateIST, flmId]
+        );
+
+        // Subtract hearts and dice rolls if they were awarded
+        if (upload.type === "prescription" && activityDetails.brandId) {
+          const [brandRows] = await connection.execute(
+            `SELECT hearts, diceRolls FROM brands WHERE id = ?`,
+            [activityDetails.brandId]
+          );
+
+          if (brandRows.length > 0) {
+            const brand = brandRows[0];
+            const noRxns = Number(activityDetails.noRxns) || 1;
+            
+            const brandHearts = Number(brand.hearts) || 0;
+            if (brandHearts > 0) {
+              const heartsToSubtract = brandHearts * noRxns;
+              await connection.execute(
+                `UPDATE flms 
+                 SET hearts = GREATEST(COALESCE(hearts, 0) - ?, 0),
+                     updatedAt = ?
+                 WHERE flmId = ?`,
+                [heartsToSubtract, reviewDateIST, flmId]
+              );
+            }
+
+            const brandDiceRolls = Number(brand.diceRolls) || 0;
+            if (brandDiceRolls > 0) {
+              const diceRollsToSubtract = brandDiceRolls * noRxns;
+              await connection.execute(
+                `UPDATE flms 
+                 SET currentDiceRollBalance = GREATEST(COALESCE(currentDiceRollBalance, 0) - ?, 0),
+                     updatedAt = ?
+                 WHERE flmId = ?`,
+                [diceRollsToSubtract, reviewDateIST, flmId]
+              );
+            }
+          }
+        } else if (upload.type === "pob" && activityDetails.brandId) {
+          const [brandRows] = await connection.execute(
+            `SELECT hearts, diceRolls, countType FROM brands WHERE id = ?`,
+            [activityDetails.brandId]
+          );
+
+          if (brandRows.length > 0) {
+            const brand = brandRows[0];
+            let multiplier = 1;
+            const brandCountType = brand.countType ? brand.countType.toLowerCase() : null;
+            
+            if (brandCountType === "unit") {
+              multiplier = Number(activityDetails.noOfUnits) || 1;
+            } else if (brandCountType === "value") {
+              multiplier = Number(activityDetails.allValue) || 1;
+            } else {
+              multiplier = Number(activityDetails.noOfUnits || activityDetails.allValue) || 1;
+            }
+            
+            const brandHearts = Number(brand.hearts) || 0;
+            if (brandHearts > 0) {
+              const heartsToSubtract = brandHearts * multiplier;
+              await connection.execute(
+                `UPDATE flms 
+                 SET hearts = GREATEST(COALESCE(hearts, 0) - ?, 0),
+                     updatedAt = ?
+                 WHERE flmId = ?`,
+                [heartsToSubtract, reviewDateIST, flmId]
+              );
+            }
+
+            const brandDiceRolls = Number(brand.diceRolls) || 0;
+            if (brandDiceRolls > 0) {
+              const diceRollsToSubtract = brandDiceRolls * multiplier;
+              await connection.execute(
+                `UPDATE flms 
+                 SET currentDiceRollBalance = GREATEST(COALESCE(currentDiceRollBalance, 0) - ?, 0),
+                     updatedAt = ?
+                 WHERE flmId = ?`,
+                [diceRollsToSubtract, reviewDateIST, flmId]
+              );
+            }
+          }
+        } else if (upload.type === "camp" && activityDetails.campId) {
+          const [campRows] = await connection.execute(
+            `SELECT hearts, diceRolls FROM camps WHERE id = ?`,
+            [activityDetails.campId]
+          );
+
+          if (campRows.length > 0) {
+            const camp = campRows[0];
+            const noOfCamps = Number(activityDetails.noOfCamps) || 1;
+            
+            const campHearts = Number(camp.hearts) || 0;
+            if (campHearts > 0) {
+              const heartsToSubtract = campHearts * noOfCamps;
+              await connection.execute(
+                `UPDATE flms 
+                 SET hearts = GREATEST(COALESCE(hearts, 0) - ?, 0),
+                     updatedAt = ?
+                 WHERE flmId = ?`,
+                [heartsToSubtract, reviewDateIST, flmId]
+              );
+            }
+
+            const campDiceRolls = Number(camp.diceRolls) || 0;
+            if (campDiceRolls > 0) {
+              const diceRollsToSubtract = campDiceRolls * noOfCamps;
+              await connection.execute(
+                `UPDATE flms 
+                 SET currentDiceRollBalance = GREATEST(COALESCE(currentDiceRollBalance, 0) - ?, 0),
+                     updatedAt = ?
+                 WHERE flmId = ?`,
+                [diceRollsToSubtract, reviewDateIST, flmId]
+              );
+            }
+          }
+        }
+      }
 
       await connection.execute(
         `UPDATE uploads
@@ -5800,6 +6012,7 @@ export const viewUploadImage = async (req, res) => {
       });
     }
 
+    console.log("yes, but ab ye change aaya h after ongoing rxpl project ko refer krte hue")
     // Get file extension to determine content type
     const fileExtension = path.extname(absolutePath) || path.extname(imagePath) || ".jpg";
     const contentType = fileExtension.toLowerCase() === ".jpeg" || fileExtension.toLowerCase() === ".jpg"

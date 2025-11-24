@@ -14,7 +14,7 @@ CREATE TABLE `boards` (
   `winner3` varchar(36) DEFAULT NULL,
   `loser` varchar(36) DEFAULT NULL,
   `numberOfPawnsUnlocked` int DEFAULT NULL,
-  -- `expirationDate` datetime DEFAULT NULL,
+  `expirationDate` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `player1` (`player1`),
   KEY `player2` (`player2`),

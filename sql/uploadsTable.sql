@@ -1,11 +1,11 @@
 CREATE TABLE `uploads` (
   `id` varchar(36) NOT NULL DEFAULT (uuid()),
-  `type` enum('prescription','pob','camp') NOT NULL,
+  `type` varchar(255) NOT NULL,
   `mrId` varchar(255) NOT NULL,
   `uploadImage` varchar(500) DEFAULT NULL,
   `dateOfUpload` date NOT NULL,
   `timeOfUpload` time DEFAULT NULL,
-  `status` enum('pending','approved','rejected') DEFAULT 'pending',
+  `status` enum('pending','approved','rejected') DEFAULT 'approved',
   `rejectionReason` text,
   `attempts` int DEFAULT '0',
   `reviewDate` datetime DEFAULT NULL,
