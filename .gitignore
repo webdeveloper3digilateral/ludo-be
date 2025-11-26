@@ -18,3 +18,4 @@ pids/
 lib-cov/
 logs/
 uploads
+.env

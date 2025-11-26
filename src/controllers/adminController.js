@@ -2611,6 +2611,24 @@ export const createActivityType = async (req, res) => {
                   message: `activitySpecificFields[${i}]: options[${j}] must be a string or object with value/label`,
                 });
               }
+              // Validate pointFactor: optional, can be null, undefined, or a number
+              if (option.pointFactor !== undefined && option.pointFactor !== null) {
+                if (typeof option.pointFactor !== 'number' || isNaN(option.pointFactor)) {
+                  return res.status(400).json({
+                    success: false,
+                    message: `activitySpecificFields[${i}]: options[${j}].pointFactor must be a number or null`,
+                  });
+                }
+              }
+              // Validate hearts: optional, can be null, undefined, or a number
+              if (option.hearts !== undefined && option.hearts !== null) {
+                if (typeof option.hearts !== 'number' || isNaN(option.hearts)) {
+                  return res.status(400).json({
+                    success: false,
+                    message: `activitySpecificFields[${i}]: options[${j}].hearts must be a number or null`,
+                  });
+                }
+              }
             } else {
               return res.status(400).json({
                 success: false,
@@ -2840,6 +2858,26 @@ export const updateActivityType = async (req, res) => {
                     success: false,
                     message: `activitySpecificFields[${i}]: options[${j}] must be a string or object with value/label`,
                   });
+                }
+                // Validate pointFactor: optional, can be null, undefined, or a number
+                if (option.pointFactor !== undefined && option.pointFactor !== null) {
+                  if (typeof option.pointFactor !== 'number' || isNaN(option.pointFactor)) {
+                    await connection.rollback();
+                    return res.status(400).json({
+                      success: false,
+                      message: `activitySpecificFields[${i}]: options[${j}].pointFactor must be a number or null`,
+                    });
+                  }
+                }
+                // Validate hearts: optional, can be null, undefined, or a number
+                if (option.hearts !== undefined && option.hearts !== null) {
+                  if (typeof option.hearts !== 'number' || isNaN(option.hearts)) {
+                    await connection.rollback();
+                    return res.status(400).json({
+                      success: false,
+                      message: `activitySpecificFields[${i}]: options[${j}].hearts must be a number or null`,
+                    });
+                  }
                 }
               } else {
                 await connection.rollback();

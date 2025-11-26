@@ -2259,9 +2259,15 @@ export const getPendingUploadsForFlm = async (req, res) => {
             });
             
             // Build result: spread filtered activityDetails first, then database fields take precedence
+            // Explicitly preserve database column fields to ensure they're not lost
             const result = {
               ...upload,
               ...filteredActivityDetails,
+              // Explicitly preserve database column fields (these should come from upload object)
+              drName: upload.drName,
+              speciality: upload.speciality,
+              mobNo: upload.mobNo,
+              scCode: upload.scCode,
               // Ensure database status is not overridden
               status: upload.status,
               // Keep activitySpecificDetails for reference (with original status)
@@ -2392,9 +2398,15 @@ export const getUploadForFlm = async (req, res) => {
           });
           
           // Build result: spread filtered activityDetails, but prioritize JOIN values for brandName/campName
+          // Explicitly preserve database column fields to ensure they're not lost
           flattenedUpload = {
             ...flattenedUpload,
             ...filteredActivityDetails,
+            // Explicitly preserve database column fields (these should come from upload object)
+            drName: upload.drName,
+            speciality: upload.speciality,
+            mobNo: upload.mobNo,
+            scCode: upload.scCode,
             // Ensure database status is not overridden (must come after spreading filteredActivityDetails)
             status: upload.status,
             // Use brandName and campName from JOINs (current database values) if available, otherwise from activityDetails

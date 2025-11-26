@@ -370,29 +370,104 @@ export const uploadFile = async (req, res) => {
     let calculatedHearts = 0;
     
     if (!isLegacyType && totalPoints === 0) {
-      // Loop through activitySpecificFields to find numeric fields
-      for (const fieldDef of activitySpecificFields) {
-        const fieldName = fieldDef.fieldName;
-        const fieldValue = req.body[fieldName];
-
-        if (fieldValue !== undefined && fieldValue !== null) {
-          // Check if it's a numeric field (type is 'number' or value can be parsed as number)
-          const numericValue = Number(fieldValue);
-          if (!isNaN(numericValue) && numericValue > 0) {
-            // Get pointFactor and hearts from field definition
-            const pointFactor = Number(fieldDef.pointFactor) || 0;
-            const hearts = Number(fieldDef.hearts) || 0;
+      // First, check for dropdown fields with options that have pointFactor/hearts
+      // This allows dropdown selection to determine pointFactor/hearts, then multiply by numeric field
+      const dropdownFields = activitySpecificFields.filter(field => 
+        field.type === 'dropdown' && 
+        Array.isArray(field.options) && 
+        field.options.length > 0
+      );
+      
+      // Check if any dropdown option has pointFactor or hearts
+      let dropdownBasedCalculation = false;
+      for (const dropdownField of dropdownFields) {
+        const dropdownValue = req.body[dropdownField.fieldName];
+        if (dropdownValue !== undefined && dropdownValue !== null && dropdownValue !== '') {
+          // Find the selected option
+          const selectedOption = dropdownField.options.find(opt => {
+            if (typeof opt === 'string') return opt === dropdownValue;
+            if (typeof opt === 'object' && opt !== null) {
+              return (opt.value || opt.label || String(opt)) === dropdownValue;
+            }
+            return false;
+          });
+          
+          if (selectedOption) {
+            // Check if this option has pointFactor or hearts
+            // Only use if explicitly provided (not null/undefined)
+            let optionPointFactor = null;
+            let optionHearts = null;
             
-            // Calculate points: pointFactor * numeric field value
-            // Example: if numberOfMedicines = 5 and pointFactor = 2, then points = 2 * 5 = 10
-            if (pointFactor > 0) {
-              totalPoints += pointFactor * numericValue;
+            if (typeof selectedOption === 'object' && selectedOption !== null) {
+              // Only set if explicitly provided and not null
+              if (selectedOption.pointFactor !== undefined && selectedOption.pointFactor !== null) {
+                const parsedPointFactor = Number(selectedOption.pointFactor);
+                if (!isNaN(parsedPointFactor) && parsedPointFactor > 0) {
+                  optionPointFactor = parsedPointFactor;
+                }
+              }
+              if (selectedOption.hearts !== undefined && selectedOption.hearts !== null) {
+                const parsedHearts = Number(selectedOption.hearts);
+                if (!isNaN(parsedHearts) && parsedHearts > 0) {
+                  optionHearts = parsedHearts;
+                }
+              }
             }
             
-            // Calculate hearts: hearts * numeric field value
-            // Example: if numberOfMedicines = 5 and hearts = 1, then hearts = 1 * 5 = 5
-            if (hearts > 0) {
-              calculatedHearts += hearts * numericValue;
+            // Only proceed if option has at least one valid pointFactor or hearts
+            if (optionPointFactor !== null || optionHearts !== null) {
+              dropdownBasedCalculation = true;
+              
+              // Find all numeric fields in activitySpecificFields
+              for (const fieldDef of activitySpecificFields) {
+                if (fieldDef.type === 'number' || fieldDef.type === 'integer') {
+                  const numericFieldName = fieldDef.fieldName;
+                  const numericValue = Number(req.body[numericFieldName]);
+                  
+                  if (!isNaN(numericValue) && numericValue > 0) {
+                    // Calculate: selectedOption.pointFactor × numericValue (only if pointFactor is provided)
+                    if (optionPointFactor !== null) {
+                      totalPoints += optionPointFactor * numericValue;
+                    }
+                    
+                    // Calculate: selectedOption.hearts × numericValue (only if hearts is provided)
+                    if (optionHearts !== null) {
+                      calculatedHearts += optionHearts * numericValue;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // If no dropdown-based calculation was used, fall back to field-level pointFactor/hearts
+      if (!dropdownBasedCalculation) {
+        // Loop through activitySpecificFields to find numeric fields
+        for (const fieldDef of activitySpecificFields) {
+          const fieldName = fieldDef.fieldName;
+          const fieldValue = req.body[fieldName];
+
+          if (fieldValue !== undefined && fieldValue !== null) {
+            // Check if it's a numeric field (type is 'number' or value can be parsed as number)
+            const numericValue = Number(fieldValue);
+            if (!isNaN(numericValue) && numericValue > 0) {
+              // Get pointFactor and hearts from field definition
+              const pointFactor = Number(fieldDef.pointFactor) || 0;
+              const hearts = Number(fieldDef.hearts) || 0;
+              
+              // Calculate points: pointFactor * numeric field value
+              // Example: if numberOfMedicines = 5 and pointFactor = 2, then points = 2 * 5 = 10
+              if (pointFactor > 0) {
+                totalPoints += pointFactor * numericValue;
+              }
+              
+              // Calculate hearts: hearts * numeric field value
+              // Example: if numberOfMedicines = 5 and hearts = 1, then hearts = 1 * 5 = 5
+              if (hearts > 0) {
+                calculatedHearts += hearts * numericValue;
+              }
             }
           }
         }
@@ -452,11 +527,11 @@ export const uploadFile = async (req, res) => {
     const formattedTime = formatISTTimeForSQL(istDateTime);
     const istDateTimeString = formatISTDateTimeForSQL(istDateTime);
 
-    // Format doctor name for types that require it
+    // Format doctor name - apply formatting for legacy types, use raw value for new types
     const formattedDrName = 
       normalizedType === "prescription" || normalizedType === "pob" || normalizedType === "camp"
         ? formatDoctorName(drName)
-        : null;
+        : (drName ? drName.trim() : null);
 
     await connection.beginTransaction();
 
@@ -1823,7 +1898,7 @@ export const resubmitUploads = async (req, res) => {
     // Fetch activity type for dynamic folder name and display name
     const normalizedUploadType = uploadType.toLowerCase();
     const [activityTypeRows] = await connection.execute(
-      "SELECT typeName, folderName FROM activityTypes WHERE typeName = ? AND isActive = 1",
+      "SELECT typeName, folderName, activitySpecificFields FROM activityTypes WHERE typeName = ? AND isActive = 1",
       [normalizedUploadType]
     );
 
@@ -2049,6 +2124,252 @@ export const resubmitUploads = async (req, res) => {
         noOfCamps: noOfCampsInt,
         campDefaultFactor: campDefaultFactor
       };
+    }
+
+    // Handle new activity types (not prescription, pob, camp) - use dynamic calculation
+    const isLegacyType = uploadType === 'prescription' || uploadType === 'pob' || uploadType === 'camp';
+    let calculatedHearts = 0;
+    
+    if (!isLegacyType && totalPoints === 0) {
+      // Parse activitySpecificFields from activityType
+      let activitySpecificFields = [];
+      if (activityType.activitySpecificFields) {
+        try {
+          activitySpecificFields = typeof activityType.activitySpecificFields === 'string'
+            ? JSON.parse(activityType.activitySpecificFields)
+            : activityType.activitySpecificFields;
+          
+          if (!Array.isArray(activitySpecificFields)) {
+            activitySpecificFields = [];
+          }
+        } catch (error) {
+          console.error("Error parsing activitySpecificFields:", error);
+          activitySpecificFields = [];
+        }
+      }
+
+      // First, check for dropdown fields with options that have pointFactor/hearts
+      const dropdownFields = activitySpecificFields.filter(field => 
+        field.type === 'dropdown' && 
+        Array.isArray(field.options) && 
+        field.options.length > 0
+      );
+      
+      // Check if any dropdown option has pointFactor or hearts
+      let dropdownBasedCalculation = false;
+      for (const dropdownField of dropdownFields) {
+        // Get value from request body or activityDetails
+        const dropdownValue = req.body[dropdownField.fieldName] || activityDetails[dropdownField.fieldName];
+        if (dropdownValue !== undefined && dropdownValue !== null && dropdownValue !== '') {
+          // Find the selected option
+          const selectedOption = dropdownField.options.find(opt => {
+            if (typeof opt === 'string') return opt === dropdownValue;
+            if (typeof opt === 'object' && opt !== null) {
+              return (opt.value || opt.label || String(opt)) === dropdownValue;
+            }
+            return false;
+          });
+          
+          if (selectedOption) {
+            // Check if this option has pointFactor or hearts
+            // Only use if explicitly provided (not null/undefined)
+            let optionPointFactor = null;
+            let optionHearts = null;
+            
+            if (typeof selectedOption === 'object' && selectedOption !== null) {
+              // Only set if explicitly provided and not null
+              if (selectedOption.pointFactor !== undefined && selectedOption.pointFactor !== null) {
+                const parsedPointFactor = Number(selectedOption.pointFactor);
+                if (!isNaN(parsedPointFactor) && parsedPointFactor > 0) {
+                  optionPointFactor = parsedPointFactor;
+                }
+              }
+              if (selectedOption.hearts !== undefined && selectedOption.hearts !== null) {
+                const parsedHearts = Number(selectedOption.hearts);
+                if (!isNaN(parsedHearts) && parsedHearts > 0) {
+                  optionHearts = parsedHearts;
+                }
+              }
+            }
+            
+            // Only proceed if option has at least one valid pointFactor or hearts
+            if (optionPointFactor !== null || optionHearts !== null) {
+              dropdownBasedCalculation = true;
+              
+              // Find all numeric fields in activitySpecificFields
+              for (const fieldDef of activitySpecificFields) {
+                if (fieldDef.type === 'number' || fieldDef.type === 'integer') {
+                  const numericFieldName = fieldDef.fieldName;
+                  // Get value from request body or activityDetails
+                  const numericValue = Number(req.body[numericFieldName] || activityDetails[numericFieldName]);
+                  
+                  if (!isNaN(numericValue) && numericValue > 0) {
+                    // Calculate: selectedOption.pointFactor × numericValue (only if pointFactor is provided)
+                    if (optionPointFactor !== null) {
+                      totalPoints += optionPointFactor * numericValue;
+                    }
+                    
+                    // Calculate: selectedOption.hearts × numericValue (only if hearts is provided)
+                    if (optionHearts !== null) {
+                      calculatedHearts += optionHearts * numericValue;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // If no dropdown-based calculation was used, fall back to field-level pointFactor/hearts
+      if (!dropdownBasedCalculation) {
+        // Loop through activitySpecificFields to find numeric fields
+        for (const fieldDef of activitySpecificFields) {
+          const fieldName = fieldDef.fieldName;
+          // Get value from request body or activityDetails
+          const fieldValue = req.body[fieldName] !== undefined ? req.body[fieldName] : activityDetails[fieldName];
+
+          if (fieldValue !== undefined && fieldValue !== null) {
+            // Check if it's a numeric field (type is 'number' or value can be parsed as number)
+            const numericValue = Number(fieldValue);
+            if (!isNaN(numericValue) && numericValue > 0) {
+              // Get pointFactor and hearts from field definition
+              const pointFactor = Number(fieldDef.pointFactor) || 0;
+              const hearts = Number(fieldDef.hearts) || 0;
+              
+              // Calculate points: pointFactor * numeric field value
+              if (pointFactor > 0) {
+                totalPoints += pointFactor * numericValue;
+              }
+              
+              // Calculate hearts: hearts * numeric field value
+              if (hearts > 0) {
+                calculatedHearts += hearts * numericValue;
+              }
+            }
+          }
+        }
+      }
+
+      // Store calculated hearts for new activity types (if calculated)
+      if (calculatedHearts > 0) {
+        newActivitySpecificDetails._calculatedHearts = calculatedHearts;
+      }
+
+      // Also handle brand-based calculation for new activity types (if brandName field exists)
+      const hasBrandNameField = activitySpecificFields.some(field => field.fieldName === "brandName");
+      if (hasBrandNameField && totalPoints === 0) {
+        const targetBrandName = brandName || activityDetails.brandName;
+        if (targetBrandName) {
+          const [brandRows] = await connection.execute(
+            "SELECT * FROM brands WHERE LOWER(TRIM(brandName)) = LOWER(TRIM(?))", 
+            [targetBrandName.trim()]
+          );
+
+          if (brandRows.length > 0) {
+            brand = brandRows[0];
+            const brandPoints = parseInt(brand.points) || 0;
+
+            // Check for noRxns field (prescription-like)
+            const hasNoRxnsField = activitySpecificFields.some(field => field.fieldName === "noRxns");
+            if (hasNoRxnsField) {
+              const noRxnsValue = req.body.noRxns || activityDetails.noRxns;
+              const noRxnsInt = parseInt(noRxnsValue) || 1;
+              const rxnDurationInt = parseInt(brand.defaultRxnDuration) || 1;
+              totalPoints = brandPoints * noRxnsInt * rxnDurationInt;
+            } else {
+              // POB-like: check for noOfUnits or allValue
+              const hasNoOfUnitsField = activitySpecificFields.some(field => field.fieldName === "noOfUnits");
+              const hasAllValueField = activitySpecificFields.some(field => field.fieldName === "allValue");
+              
+              if (hasNoOfUnitsField || hasAllValueField) {
+                const brandCountType = brand.countType ? brand.countType.toLowerCase() : null;
+                
+                if (brandCountType === "unit") {
+                  const noOfUnitsValue = req.body.noOfUnits || activityDetails.noOfUnits;
+                  if (noOfUnitsValue) {
+                    const noOfUnitsInt = parseInt(noOfUnitsValue) || 1;
+                    const rxnDurationInt = parseInt(brand.defaultRxnDuration) || 1;
+                    const factor = parseInt(brand.unitFactor) || 1;
+                    totalPoints = brandPoints * noOfUnitsInt * rxnDurationInt * factor;
+                  }
+                } else if (brandCountType === "value") {
+                  const allValueFromRequest = req.body.allValue || activityDetails.allValue;
+                  if (allValueFromRequest) {
+                    const allValueInt = parseInt(allValueFromRequest) || 1;
+                    const rxnDurationInt = parseInt(brand.defaultRxnDuration) || 1;
+                    const factor = parseInt(brand.valueFactor) || 1;
+                    totalPoints = brandPoints * allValueInt * rxnDurationInt * factor;
+                  }
+                } else {
+                  // Fallback: use whichever field is provided
+                  const noOfUnitsValue = req.body.noOfUnits || activityDetails.noOfUnits;
+                  const allValueFromRequest = req.body.allValue || activityDetails.allValue;
+                  if (noOfUnitsValue || allValueFromRequest) {
+                    const valueInt = parseInt(noOfUnitsValue || allValueFromRequest) || 1;
+                    const rxnDurationInt = parseInt(brand.defaultRxnDuration) || 1;
+                    totalPoints = brandPoints * valueInt * rxnDurationInt;
+                  }
+                }
+              } else {
+                // If brand is required but no specific calculation fields, use default
+                totalPoints = brandPoints;
+              }
+            }
+          }
+        }
+      }
+
+      // Handle camp-based calculation for new activity types (if campName field exists)
+      const hasCampNameField = activitySpecificFields.some(field => field.fieldName === "campName");
+      if (hasCampNameField && totalPoints === 0) {
+        const targetCampName = campName || activityDetails.campName;
+        if (targetCampName) {
+          const [campRows] = await connection.execute(
+            "SELECT * FROM camps WHERE LOWER(TRIM(campName)) = LOWER(TRIM(?))", 
+            [targetCampName.trim()]
+          );
+
+          if (campRows.length > 0) {
+            camp = campRows[0];
+            const campPoints = parseInt(camp.points) || 0;
+            const campDefaultFactor = parseInt(camp.defaultFactor) || 1;
+            
+            // Get noOfCamps from request body or activitySpecificFields
+            const noOfCampsValue = req.body.noOfCamps || activityDetails.noOfCamps;
+            const noOfCampsInt = parseInt(noOfCampsValue) || 1;
+            totalPoints = campPoints * noOfCampsInt * campDefaultFactor;
+          }
+        }
+      }
+
+      // Update activitySpecificDetails with all fields from request body
+      activitySpecificFields.forEach((field) => {
+        const fieldName = field.fieldName;
+        const fieldValue = req.body[fieldName];
+        
+        // Skip reserved/system fields
+        if (['reason', 'attempts', 'reviewDate', 'points', 'diceRollBalance', 'isCalculated', 
+             'id', 'type', 'mrId', 'uploadImage', 'dateOfUpload', 'timeOfUpload', 
+             'createdAt', 'updatedAt', 'status', 'drName', 'speciality', 'mobNo', 'scCode'].includes(fieldName)) {
+          return;
+        }
+
+        if (fieldValue !== undefined && fieldValue !== null && fieldValue !== '') {
+          // For numeric fields, ensure we store as number
+          if (field.type === 'number' || field.type === 'integer') {
+            const numValue = Number(fieldValue);
+            if (!isNaN(numValue)) {
+              newActivitySpecificDetails[fieldName] = numValue;
+            }
+          } else {
+            newActivitySpecificDetails[fieldName] = fieldValue;
+          }
+        } else if (activityDetails[fieldName] !== undefined) {
+          // If not in request body, keep existing value from activityDetails
+          newActivitySpecificDetails[fieldName] = activityDetails[fieldName];
+        }
+      });
     }
 
     // Handle file upload
