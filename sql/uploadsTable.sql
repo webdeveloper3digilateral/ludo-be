@@ -6,7 +6,7 @@ CREATE TABLE `uploads` (
   `dateOfUpload` date NOT NULL,
   `timeOfUpload` time DEFAULT NULL,
   `status` enum('pending','approved','rejected') DEFAULT 'approved',
-  `rejectionReason` text,
+  `reason` text DEFAULT NULL,
   `attempts` int DEFAULT '0',
   `reviewDate` datetime DEFAULT NULL,
   `points` int DEFAULT '0',

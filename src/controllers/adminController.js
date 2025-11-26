@@ -1000,7 +1000,7 @@ export const getAllCamps = async (req, res) => {
 export const config = async (req, res) => {
   const connection = await db.getConnection();
   try {
-    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts } = req.body;
+    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts, isAutoApprovalAllowed } = req.body;
 
     if (
       medianValue === undefined ||
@@ -1019,6 +1019,7 @@ export const config = async (req, res) => {
     const greaterFactor = Number(greaterMedianFactor);
     const pointToDiceRoll = Number(pointToDiceRollRatio);
     const diceRollsToHeartsValue = diceRollsToHearts !== undefined ? Number(diceRollsToHearts) : 5;
+    const isAutoApprovalAllowedValue = isAutoApprovalAllowed !== undefined ? (isAutoApprovalAllowed ? 1 : 0) : 1;
     
     if (
       Number.isNaN(median) ||
@@ -1033,12 +1034,19 @@ export const config = async (req, res) => {
       });
     }
 
+    if (isAutoApprovalAllowed !== undefined && typeof isAutoApprovalAllowed !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: "isAutoApprovalAllowed must be a boolean value",
+      });
+    }
+
     await connection.beginTransaction();
 
     await connection.execute(
-      `INSERT INTO config (medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts)
-       VALUES (?, ?, ?, ?, ?)`,
-      [median, lessFactor, greaterFactor, pointToDiceRoll, diceRollsToHeartsValue]
+      `INSERT INTO config (medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts, isAutoApprovalAllowed)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [median, lessFactor, greaterFactor, pointToDiceRoll, diceRollsToHeartsValue, isAutoApprovalAllowedValue]
     );
 
     await connection.commit();
@@ -1052,6 +1060,7 @@ export const config = async (req, res) => {
         greaterMedianFactor: greaterFactor,
         pointToDiceRollRatio: pointToDiceRoll,
         diceRollsToHearts: diceRollsToHeartsValue,
+        isAutoApprovalAllowed: isAutoApprovalAllowedValue === 1,
       },
     });
   } catch (error) {
@@ -1060,6 +1069,161 @@ export const config = async (req, res) => {
     res
       .status(500)
       .json({ success: false, message: "Internal server error", error: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+export const updateConfig = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const { id } = req.params;
+    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts, isAutoApprovalAllowed } = req.body;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: "Config ID is required",
+      });
+    }
+
+    // Check if config exists
+    const [configRows] = await connection.execute(
+      "SELECT * FROM config WHERE id = ?",
+      [id]
+    );
+
+    if (configRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Config not found",
+      });
+    }
+
+    await connection.beginTransaction();
+
+    // Build update query dynamically
+    const updates = [];
+    const values = [];
+
+    if (medianValue !== undefined) {
+      const median = Number(medianValue);
+      if (Number.isNaN(median)) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "medianValue must be a valid number",
+        });
+      }
+      updates.push("medianValue = ?");
+      values.push(median);
+    }
+
+    if (lessMedianFactor !== undefined) {
+      const lessFactor = Number(lessMedianFactor);
+      if (Number.isNaN(lessFactor)) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "lessMedianFactor must be a valid number",
+        });
+      }
+      updates.push("lessMedianFactor = ?");
+      values.push(lessFactor);
+    }
+
+    if (greaterMedianFactor !== undefined) {
+      const greaterFactor = Number(greaterMedianFactor);
+      if (Number.isNaN(greaterFactor)) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "greaterMedianFactor must be a valid number",
+        });
+      }
+      updates.push("greaterMedianFactor = ?");
+      values.push(greaterFactor);
+    }
+
+    if (pointToDiceRollRatio !== undefined) {
+      const pointToDiceRoll = Number(pointToDiceRollRatio);
+      if (Number.isNaN(pointToDiceRoll)) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "pointToDiceRollRatio must be a valid number",
+        });
+      }
+      updates.push("pointToDiceRollRatio = ?");
+      values.push(pointToDiceRoll);
+    }
+
+    if (diceRollsToHearts !== undefined) {
+      const diceRollsToHeartsValue = Number(diceRollsToHearts);
+      if (Number.isNaN(diceRollsToHeartsValue)) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "diceRollsToHearts must be a valid number",
+        });
+      }
+      updates.push("diceRollsToHearts = ?");
+      values.push(diceRollsToHeartsValue);
+    }
+
+    if (isAutoApprovalAllowed !== undefined) {
+      if (typeof isAutoApprovalAllowed !== 'boolean') {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "isAutoApprovalAllowed must be a boolean value",
+        });
+      }
+      updates.push("isAutoApprovalAllowed = ?");
+      values.push(isAutoApprovalAllowed ? 1 : 0);
+    }
+
+    if (updates.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "No fields to update",
+      });
+    }
+
+    values.push(id);
+
+    await connection.execute(
+      `UPDATE config SET ${updates.join(", ")} WHERE id = ?`,
+      values
+    );
+
+    await connection.commit();
+
+    // Fetch updated config
+    const [updatedRows] = await connection.execute(
+      "SELECT * FROM config WHERE id = ?",
+      [id]
+    );
+
+    const updatedConfig = updatedRows[0];
+    if (updatedConfig) {
+      updatedConfig.isAutoApprovalAllowed = updatedConfig.isAutoApprovalAllowed === 1;
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Config updated successfully",
+      data: updatedConfig,
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error updating config:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
   } finally {
     if (connection) connection.release();
   }
@@ -2402,6 +2566,59 @@ export const createActivityType = async (req, res) => {
             message: `activitySpecificFields[${i}]: required must be a boolean`,
           });
         }
+        
+        // Validate pointFactor: optional, but if provided must be a number
+        if (field.pointFactor !== undefined && (typeof field.pointFactor !== 'number' || isNaN(field.pointFactor))) {
+          return res.status(400).json({
+            success: false,
+            message: `activitySpecificFields[${i}]: pointFactor must be a number`,
+          });
+        }
+        
+        // Validate hearts: optional, but if provided must be a number
+        if (field.hearts !== undefined && (typeof field.hearts !== 'number' || isNaN(field.hearts))) {
+          return res.status(400).json({
+            success: false,
+            message: `activitySpecificFields[${i}]: hearts must be a number`,
+          });
+        }
+        
+        // Validate dropdown fields: must have options array
+        if (field.type === 'dropdown') {
+          if (!field.options || !Array.isArray(field.options)) {
+            return res.status(400).json({
+              success: false,
+              message: `activitySpecificFields[${i}]: dropdown type requires an options array`,
+            });
+          }
+          if (field.options.length === 0) {
+            return res.status(400).json({
+              success: false,
+              message: `activitySpecificFields[${i}]: dropdown options array cannot be empty`,
+            });
+          }
+          // Validate each option: can be string or object with value/label
+          for (let j = 0; j < field.options.length; j++) {
+            const option = field.options[j];
+            if (typeof option === 'string') {
+              // String option is valid
+              continue;
+            } else if (typeof option === 'object' && option !== null) {
+              // Object option must have value or label
+              if (!option.value && !option.label) {
+                return res.status(400).json({
+                  success: false,
+                  message: `activitySpecificFields[${i}]: options[${j}] must be a string or object with value/label`,
+                });
+              }
+            } else {
+              return res.status(400).json({
+                success: false,
+                message: `activitySpecificFields[${i}]: options[${j}] must be a string or object`,
+              });
+            }
+          }
+        }
       }
 
       activitySpecificFieldsJson = JSON.stringify(parsedFields);
@@ -2573,6 +2790,65 @@ export const updateActivityType = async (req, res) => {
               success: false,
               message: `activitySpecificFields[${i}]: required must be a boolean`,
             });
+          }
+          
+          // Validate pointFactor: optional, but if provided must be a number
+          if (field.pointFactor !== undefined && (typeof field.pointFactor !== 'number' || isNaN(field.pointFactor))) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: `activitySpecificFields[${i}]: pointFactor must be a number`,
+            });
+          }
+          
+          // Validate hearts: optional, but if provided must be a number
+          if (field.hearts !== undefined && (typeof field.hearts !== 'number' || isNaN(field.hearts))) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: `activitySpecificFields[${i}]: hearts must be a number`,
+            });
+          }
+          
+          // Validate dropdown fields: must have options array
+          if (field.type === 'dropdown') {
+            if (!field.options || !Array.isArray(field.options)) {
+              await connection.rollback();
+              return res.status(400).json({
+                success: false,
+                message: `activitySpecificFields[${i}]: dropdown type requires an options array`,
+              });
+            }
+            if (field.options.length === 0) {
+              await connection.rollback();
+              return res.status(400).json({
+                success: false,
+                message: `activitySpecificFields[${i}]: dropdown options array cannot be empty`,
+              });
+            }
+            // Validate each option: can be string or object with value/label
+            for (let j = 0; j < field.options.length; j++) {
+              const option = field.options[j];
+              if (typeof option === 'string') {
+                // String option is valid
+                continue;
+              } else if (typeof option === 'object' && option !== null) {
+                // Object option must have value or label
+                if (!option.value && !option.label) {
+                  await connection.rollback();
+                  return res.status(400).json({
+                    success: false,
+                    message: `activitySpecificFields[${i}]: options[${j}] must be a string or object with value/label`,
+                  });
+                }
+              } else {
+                await connection.rollback();
+                return res.status(400).json({
+                  success: false,
+                  message: `activitySpecificFields[${i}]: options[${j}] must be a string or object`,
+                });
+              }
+            }
           }
         }
 

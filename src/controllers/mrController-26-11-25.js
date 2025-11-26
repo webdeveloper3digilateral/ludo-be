@@ -1,3 +1,5 @@
+//before adding the activity type pointfactor and hearts logic
+
 import db from "../config/db.js";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -364,41 +366,6 @@ export const uploadFile = async (req, res) => {
       totalPoints = campPoints * noOfCampsInt * campDefaultFactor;
     }
 
-    // For new activity types (not prescription, pob, camp), use dynamic calculation
-    // Calculate points and hearts based on pointFactor and hearts from activitySpecificFields
-    const isLegacyType = normalizedType === 'prescription' || normalizedType === 'pob' || normalizedType === 'camp';
-    let calculatedHearts = 0;
-    
-    if (!isLegacyType && totalPoints === 0) {
-      // Loop through activitySpecificFields to find numeric fields
-      for (const fieldDef of activitySpecificFields) {
-        const fieldName = fieldDef.fieldName;
-        const fieldValue = req.body[fieldName];
-
-        if (fieldValue !== undefined && fieldValue !== null) {
-          // Check if it's a numeric field (type is 'number' or value can be parsed as number)
-          const numericValue = Number(fieldValue);
-          if (!isNaN(numericValue) && numericValue > 0) {
-            // Get pointFactor and hearts from field definition
-            const pointFactor = Number(fieldDef.pointFactor) || 0;
-            const hearts = Number(fieldDef.hearts) || 0;
-            
-            // Calculate points: pointFactor * numeric field value
-            // Example: if numberOfMedicines = 5 and pointFactor = 2, then points = 2 * 5 = 10
-            if (pointFactor > 0) {
-              totalPoints += pointFactor * numericValue;
-            }
-            
-            // Calculate hearts: hearts * numeric field value
-            // Example: if numberOfMedicines = 5 and hearts = 1, then hearts = 1 * 5 = 5
-            if (hearts > 0) {
-              calculatedHearts += hearts * numericValue;
-            }
-          }
-        }
-      }
-    }
-
     // Handle file upload
     if (!req.file) {
       return res.status(400).json({
@@ -521,11 +488,6 @@ export const uploadFile = async (req, res) => {
       }
     }
 
-    // Store calculated hearts for new activity types (if calculated)
-    if (calculatedHearts > 0) {
-      activitySpecificDetails._calculatedHearts = calculatedHearts;
-    }
-
     // Reserved/system fields that should NOT be stored in activitySpecificDetails
     // These are database columns managed by the system, not user input fields
     // NOTE: If a field with the same name exists in activitySpecificFields, it's a user-defined field
@@ -596,11 +558,6 @@ export const uploadFile = async (req, res) => {
         }
       }
     });
-
-    // Store calculated hearts for new activity types (if calculated)
-    if (calculatedHearts > 0) {
-      activitySpecificDetails._calculatedHearts = calculatedHearts;
-    }
 
     // Add activitySpecificDetails as JSON
     insertFields.push("activitySpecificDetails");
@@ -773,18 +730,6 @@ export const uploadFile = async (req, res) => {
             );
           }
         }
-      }
-
-      // Award calculated hearts for new activity types (not prescription, pob, camp) during auto-approval
-      const isLegacyType = normalizedType === 'prescription' || normalizedType === 'pob' || normalizedType === 'camp';
-      if (!isLegacyType && calculatedHearts > 0) {
-        await connection.execute(
-          `UPDATE flms 
-           SET hearts = COALESCE(hearts, 0) + ?,
-               updatedAt = ?
-           WHERE flmId = ?`,
-          [calculatedHearts, istDateTimeString, flmId]
-        );
       }
     }
 

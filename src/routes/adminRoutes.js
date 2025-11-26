@@ -21,6 +21,7 @@ import {
   getAllActivityTypes,
   deleteActivityType,
   config,
+  updateConfig,
   resetBoards,
   givePoints,
   startManualGame
@@ -65,6 +66,7 @@ router.post("/startManualGame",startManualGame)
 //point-move config
 // router.post("/moves/median-adjustment", configs);
 router.post("/moves/config", config);
+router.put("/moves/config/:id", updateConfig);
 
 
 export default router;

@@ -1,3 +1,4 @@
+//before adding the activity type pointfactor and hearts logic
 import db from "../config/db.js";
 import {
   getISTDateTime,
@@ -2701,22 +2702,6 @@ export const reviewUpload = async (req, res) => {
           }
         }
       }
-
-      // Check for calculated hearts from new activity types (not prescription, pob, camp)
-      // These hearts are calculated during upload and stored in activitySpecificDetails
-      const isLegacyType = upload.type === 'prescription' || upload.type === 'pob' || upload.type === 'camp';
-      if (!isLegacyType && activityDetails._calculatedHearts) {
-        const calculatedHearts = Number(activityDetails._calculatedHearts) || 0;
-        if (calculatedHearts > 0) {
-          await connection.execute(
-            `UPDATE flms 
-             SET hearts = COALESCE(hearts, 0) + ?,
-                 updatedAt = ?
-             WHERE flmId = ?`,
-            [calculatedHearts, updatedAtIST, flmId]
-          );
-        }
-      }
 //end
       await connection.commit();
 
@@ -2918,21 +2903,6 @@ export const reviewUpload = async (req, res) => {
                 [diceRollsToSubtract, reviewDateIST, flmId]
               );
             }
-          }
-        }
-        
-        // Check for calculated hearts from new activity types to subtract
-        const isLegacyType = upload.type === 'prescription' || upload.type === 'pob' || upload.type === 'camp';
-        if (!isLegacyType && activityDetails._calculatedHearts) {
-          const calculatedHeartsToSubtract = Number(activityDetails._calculatedHearts) || 0;
-          if (calculatedHeartsToSubtract > 0) {
-            await connection.execute(
-              `UPDATE flms 
-               SET hearts = GREATEST(COALESCE(hearts, 0) - ?, 0),
-                   updatedAt = ?
-               WHERE flmId = ?`,
-              [calculatedHeartsToSubtract, reviewDateIST, flmId]
-            );
           }
         }
       }
