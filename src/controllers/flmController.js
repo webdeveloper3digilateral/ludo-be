@@ -6565,6 +6565,7 @@ export const downloadUploadImage = async (req, res) => {
     }
 
     const imagePath = rows[0].uploadImage;
+    const uploadType = rows[0].type;
 
     if (!imagePath) {
       return res.status(404).json({
@@ -6587,7 +6588,13 @@ export const downloadUploadImage = async (req, res) => {
       });
     }
 
-    return res.download(absolutePath, path.basename(absolutePath), err => {
+    // Generate a descriptive filename based on type (dynamic)
+    const fileExtension = path.extname(absolutePath) || path.extname(imagePath) || "";
+    // Use the actual upload type as the label (already normalized to lowercase)
+    const typeLabel = uploadType || "upload";
+    const downloadFileName = `${typeLabel}_${uploadId}${fileExtension}`;
+
+    return res.download(absolutePath, downloadFileName, err => {
       if (err) {
         console.error("Error sending upload image:", err);
         if (!res.headersSent) {

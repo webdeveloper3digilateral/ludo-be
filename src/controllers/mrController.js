@@ -527,11 +527,8 @@ export const uploadFile = async (req, res) => {
     const formattedTime = formatISTTimeForSQL(istDateTime);
     const istDateTimeString = formatISTDateTimeForSQL(istDateTime);
 
-    // Format doctor name - apply formatting for legacy types, use raw value for new types
-    const formattedDrName = 
-      normalizedType === "prescription" || normalizedType === "pob" || normalizedType === "camp"
-        ? formatDoctorName(drName)
-        : (drName ? drName.trim() : null);
+    // Format doctor name - always add "Dr." prefix if not already present
+    const formattedDrName = formatDoctorName(drName);
 
     await connection.beginTransaction();
 
@@ -2690,9 +2687,10 @@ export const downloadUploadImageForMr = async (req, res) => {
       });
     }
 
-    // Generate a descriptive filename based on type
+    // Generate a descriptive filename based on type (dynamic)
     const fileExtension = path.extname(absolutePath) || path.extname(imagePath) || "";
-    const typeLabel = uploadType === "prescription" ? "prescription" : uploadType === "pob" ? "pob" : "camp";
+    // Use the actual upload type as the label (already normalized to lowercase)
+    const typeLabel = uploadType || "upload";
     const downloadFileName = `${typeLabel}_${uploadIdParam}${fileExtension}`;
 
     return res.download(absolutePath, downloadFileName, err => {

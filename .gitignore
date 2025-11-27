@@ -19,3 +19,4 @@ lib-cov/
 logs/
 uploads
 .env
+data.xlsx

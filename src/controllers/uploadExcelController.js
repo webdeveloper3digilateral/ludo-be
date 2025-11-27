@@ -336,9 +336,26 @@ export const handleExcelSheetUpload = async (req, res) => {
          WHERE flmId IS NOT NULL
          GROUP BY flmId
        ) m ON f.flmId = m.flmId
-       SET f.mrCount = COALESCE(m.mrCount, 0), f.updatedAt = NOW()`,
-    
+       SET f.mrCount = COALESCE(m.mrCount, 0), f.updatedAt = NOW()`
     );
+
+    // Insert all FLM IDs into diceRolls table
+    // Get all unique FLM IDs from the processed data
+    const flmIds = [...new Set(data.map(row => row.FLMID).filter(id => id))];
+    
+    // Insert each FLM ID into diceRolls table (ignore if already exists due to UNIQUE constraint)
+    for (const flmId of flmIds) {
+      try {
+        await db.execute(
+          `INSERT IGNORE INTO diceRolls (playerId, diceValue, rolledAt, boardStatus, currentBoardId, teamName, activePlayerId)
+           VALUES (?, NULL, NULL, NULL, NULL, NULL, NULL)`,
+          [flmId]
+        );
+      } catch (error) {
+        // If insert fails (e.g., foreign key constraint), log but continue
+        console.error(`Error inserting FLM ${flmId} into diceRolls:`, error.message);
+      }
+    }
 
     res.status(200).json({
       message: "Data uploaded and saved successfully into MySQL",
@@ -350,8 +367,6 @@ export const handleExcelSheetUpload = async (req, res) => {
       error: "Internal Server Error",
       details: error.message,
     });
-  } finally {
-    await db.end();
   }
 };
 

@@ -9,7 +9,7 @@ CREATE TABLE `flms` (
   `points` int DEFAULT '0',
   `kills` int DEFAULT '0',
   `hearts` int DEFAULT '0',
-    `diamonds` int DEFAULT '0',
+  `diamonds` int DEFAULT '0',
   `status` varchar(255) DEFAULT 'Active',
   `createdAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
