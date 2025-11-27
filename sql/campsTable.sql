@@ -4,6 +4,7 @@ CREATE TABLE `camps` (
   `defaultFactor` int DEFAULT '1',
   `points` int DEFAULT '0',
   `hearts` int DEFAULT NULL,
+  `diamonds` int DEFAULT NULL,
   `diceRolls` int DEFAULT NULL,
   `createdAt` datetime DEFAULT CURRENT_TIMESTAMP,
   `updatedAt` datetime DEFAULT CURRENT_TIMESTAMP,

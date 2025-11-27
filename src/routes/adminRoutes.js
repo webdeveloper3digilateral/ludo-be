@@ -24,7 +24,9 @@ import {
   updateConfig,
   resetBoards,
   givePoints,
-  startManualGame
+  startManualGame,
+  giveDiceRollsToPlayers,
+  giveDiceRollsToRole
   // applyMedianMoveAdjustment,
 } from "../controllers/adminController.js";
 
@@ -67,6 +69,9 @@ router.post("/startManualGame",startManualGame)
 // router.post("/moves/median-adjustment", configs);
 router.post("/moves/config", config);
 router.put("/moves/config/:id", updateConfig);
+
+router.post("/giveDiceRollsToPlayers",giveDiceRollsToPlayers)
+router.post("/giveDiceRollsToRole", giveDiceRollsToRole)
 
 
 export default router;

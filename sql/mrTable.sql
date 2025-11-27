@@ -7,6 +7,7 @@ CREATE TABLE `mrs` (
   `zone` varchar(255) DEFAULT NULL,
   `teamName` varchar(255) DEFAULT NULL,
   `points` int DEFAULT '0',
+  `diamonds` int DEFAULT '0',
   `diceRollBalance` int DEFAULT '0',
   `hasAccess` tinyint(1) DEFAULT '0',
   `fromDate` datetime DEFAULT NULL,

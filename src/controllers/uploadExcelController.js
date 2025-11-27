@@ -21,17 +21,18 @@ export const handleExcelSheetUpload = async (req, res) => {
     const sheet = workbook.SheetNames[0];
     const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheet]);
 
-    const [configRows] = await db.execute(
-      `SELECT pointToDiceRollRatio
-       FROM config
-       WHERE pointToDiceRollRatio IS NOT NULL
-       ORDER BY createdAt DESC
-       LIMIT 1`
-    );
+    // Commented out: Default points and dice rolls will be provided using the new APIs (giveDiceRollsToRole, giveDiceRollsToPlayers)
+    // const [configRows] = await db.execute(
+    //   `SELECT pointToDiceRollRatio
+    //    FROM config
+    //    WHERE pointToDiceRollRatio IS NOT NULL
+    //    ORDER BY createdAt DESC
+    //    LIMIT 1`
+    // );
 
-    const pointToDiceRollRatio = Number(configRows?.[0]?.pointToDiceRollRatio) || 1;
-    const defaultPoints = 100;
-    const defaultMoves = defaultPoints * pointToDiceRollRatio;
+    // const pointToDiceRollRatio = Number(configRows?.[0]?.pointToDiceRollRatio) || 1;
+    // const defaultPoints = 100;
+    // const defaultMoves = defaultPoints * pointToDiceRollRatio;
 
     for (const row of data) {
       // Get team names from Excel (handle case variations)
@@ -159,6 +160,7 @@ export const handleExcelSheetUpload = async (req, res) => {
       if (flmRows.length > 0) {
         // Update teamName if we have a value (from Excel or inherited)
         if (isValidValue(finalFlmTeamName)) {
+          // Commented out: points and currentDiceRollBalance - will be provided using new APIs
           await db.execute(
             `UPDATE flms
              SET flmName = ?,
@@ -167,8 +169,6 @@ export const handleExcelSheetUpload = async (req, res) => {
                  region = ?,
                  zone = ?,
                  teamName = ?,
-                 points = ?,
-                 currentDiceRollBalance = ?,
                  adminId = ?,
                  updatedAt = NOW()
              WHERE flmId = ?`,
@@ -179,14 +179,13 @@ export const handleExcelSheetUpload = async (req, res) => {
               row.FLMREGION,
               row.FLMZONE,
               finalFlmTeamName,
-              defaultPoints,
-              defaultMoves,
               adminId,
               row.FLMID,
             ]
           );
         } else {
           // Skip teamName update if not provided and no inheritance
+          // Commented out: points and currentDiceRollBalance - will be provided using new APIs
           await db.execute(
             `UPDATE flms
              SET flmName = ?,
@@ -194,8 +193,6 @@ export const handleExcelSheetUpload = async (req, res) => {
                  hq = ?,
                  region = ?,
                  zone = ?,
-                 points = ?,
-                 currentDiceRollBalance = ?,
                  adminId = ?,
                  updatedAt = NOW()
              WHERE flmId = ?`,
@@ -205,8 +202,6 @@ export const handleExcelSheetUpload = async (req, res) => {
               row.FLMHQ,
               row.FLMREGION,
               row.FLMZONE,
-              defaultPoints,
-              defaultMoves,
               adminId,
               row.FLMID,
             ]
@@ -214,9 +209,10 @@ export const handleExcelSheetUpload = async (req, res) => {
         }
       } else {
         // For INSERT, use teamName if provided or inherited, otherwise null
+        // Commented out: points and currentDiceRollBalance - will be provided using new APIs
         await db.execute(
-          `INSERT INTO flms (flmId, FlmName, password, hq, region, zone, teamName, slmId, points, currentDiceRollBalance, adminId, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+          `INSERT INTO flms (flmId, FlmName, password, hq, region, zone, teamName, slmId, adminId, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
           [
             row.FLMID,
             row.FLMNAME,
@@ -226,8 +222,6 @@ export const handleExcelSheetUpload = async (req, res) => {
             row.FLMZONE,
             finalFlmTeamName,
             row.SLMID,
-            defaultPoints,
-            defaultMoves,
             adminId,
           ]
         );

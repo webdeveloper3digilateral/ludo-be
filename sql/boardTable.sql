@@ -14,7 +14,7 @@
 --   `winner3` varchar(36) DEFAULT NULL,
 --   `loser` varchar(36) DEFAULT NULL,
 --   `numberOfPawnsUnlocked` int DEFAULT NULL,
---   `expirationDate` datetime DEFAULT NULL,
+--   `endTime` datetime(3) DEFAULT CURRENT_TIMESTAMP(3),
 --   PRIMARY KEY (`id`),
 --   KEY `player1` (`player1`),
 --   KEY `player2` (`player2`),

@@ -2447,18 +2447,18 @@ const hasActiveOrRecentBoards = async (connection, flmId) => {
   const todayDateIST = formatISTDateForSQL();
   
   // Check for active boards or boards that haven't expired yet
-  // A board expires when: DATE(expirationDate) + INTERVAL 1 DAY <= DATE(NOW())
-  // So a board is still valid if: DATE(expirationDate) + INTERVAL 1 DAY > DATE(NOW())
-  // Or if expirationDate is NULL (no expiration)
+  // A board expires when: endTime <= NOW()
+  // So a board is still valid if: endTime IS NULL OR endTime > NOW()
+  // If endTime is NULL, the board never expires
   const [boardRows] = await connection.execute(
     `SELECT id FROM boards
      WHERE (player1 = ? OR player2 = ? OR player3 = ? OR player4 = ?)
        AND (
-         expirationDate IS NULL 
-         OR DATE(DATE_ADD(expirationDate, INTERVAL 1 DAY)) > DATE(?)
+         endTime IS NULL
+         OR endTime > ?
        )
      LIMIT 1`,
-    [flmId, flmId, flmId, flmId, todayDateIST]
+    [flmId, flmId, flmId, flmId, formatISTDateTimeForSQL()]
   );
   
   return boardRows.length > 0;
@@ -2619,7 +2619,7 @@ export const reviewUpload = async (req, res) => {
       // Check for brand-based rewards (if brandId exists in activityDetails)
       if (activityDetails.brandId) {
         const [brandRows] = await connection.execute(
-          `SELECT hearts, diceRolls, countType FROM brands WHERE id = ?`,
+          `SELECT diamonds, diceRolls, countType FROM brands WHERE id = ?`,
           [activityDetails.brandId]
         );
 
@@ -2646,16 +2646,24 @@ export const reviewUpload = async (req, res) => {
             }
           }
           
-          // Award hearts if specified
-          const brandHearts = Number(brand.hearts) || 0;
-          if (brandHearts > 0) {
-            const heartsToAward = brandHearts * multiplier;
+          // Award diamonds if specified
+          const brandDiamonds = Number(brand.diamonds) || 0;
+          if (brandDiamonds > 0) {
+            const diamondsToAward = brandDiamonds * multiplier;
             await connection.execute(
               `UPDATE flms 
-               SET hearts = COALESCE(hearts, 0) + ?,
+               SET diamonds = COALESCE(diamonds, 0) + ?,
                    updatedAt = ?
                WHERE flmId = ?`,
-              [heartsToAward, updatedAtIST, flmId]
+              [diamondsToAward, updatedAtIST, flmId]
+            );
+            // Also award diamonds to MR
+            await connection.execute(
+              `UPDATE mrs 
+               SET diamonds = COALESCE(diamonds, 0) + ?,
+                   updatedAt = ?
+               WHERE mrId = ?`,
+              [diamondsToAward, updatedAtIST, upload.mrId]
             );
           }
 
@@ -2677,7 +2685,7 @@ export const reviewUpload = async (req, res) => {
       // Check for camp-based rewards (if campId exists in activityDetails)
       if (activityDetails.campId) {
         const [campRows] = await connection.execute(
-          `SELECT hearts, diceRolls FROM camps WHERE id = ?`,
+          `SELECT diamonds, diceRolls FROM camps WHERE id = ?`,
           [activityDetails.campId]
         );
 
@@ -2686,16 +2694,24 @@ export const reviewUpload = async (req, res) => {
           // Use noOfCamps from activitySpecificDetails
           const noOfCamps = Number(activityDetails.noOfCamps) || 1;
           
-          // Award hearts if specified
-          const campHearts = Number(camp.hearts) || 0;
-          if (campHearts > 0) {
-            const heartsToAward = campHearts * noOfCamps;
+          // Award diamonds if specified
+          const campDiamonds = Number(camp.diamonds) || 0;
+          if (campDiamonds > 0) {
+            const diamondsToAward = campDiamonds * noOfCamps;
             await connection.execute(
               `UPDATE flms 
-               SET hearts = COALESCE(hearts, 0) + ?,
+               SET diamonds = COALESCE(diamonds, 0) + ?,
                    updatedAt = ?
                WHERE flmId = ?`,
-              [heartsToAward, updatedAtIST, flmId]
+              [diamondsToAward, updatedAtIST, flmId]
+            );
+            // Also award diamonds to MR
+            await connection.execute(
+              `UPDATE mrs 
+               SET diamonds = COALESCE(diamonds, 0) + ?,
+                   updatedAt = ?
+               WHERE mrId = ?`,
+              [diamondsToAward, updatedAtIST, upload.mrId]
             );
           }
 
@@ -2714,18 +2730,26 @@ export const reviewUpload = async (req, res) => {
         }
       }
 
-      // Check for calculated hearts from new activity types (not prescription, pob, camp)
-      // These hearts are calculated during upload and stored in activitySpecificDetails
+      // Check for calculated diamonds from new activity types (not prescription, pob, camp)
+      // These diamonds are calculated during upload and stored in activitySpecificDetails
       const isLegacyType = upload.type === 'prescription' || upload.type === 'pob' || upload.type === 'camp';
-      if (!isLegacyType && activityDetails._calculatedHearts) {
-        const calculatedHearts = Number(activityDetails._calculatedHearts) || 0;
-        if (calculatedHearts > 0) {
+      if (!isLegacyType && activityDetails._calculatedDiamonds) {
+        const calculatedDiamonds = Number(activityDetails._calculatedDiamonds) || 0;
+        if (calculatedDiamonds > 0) {
           await connection.execute(
             `UPDATE flms 
-             SET hearts = COALESCE(hearts, 0) + ?,
+             SET diamonds = COALESCE(diamonds, 0) + ?,
                  updatedAt = ?
              WHERE flmId = ?`,
-            [calculatedHearts, updatedAtIST, flmId]
+            [calculatedDiamonds, updatedAtIST, flmId]
+          );
+          // Also award diamonds to MR
+          await connection.execute(
+            `UPDATE mrs 
+             SET diamonds = COALESCE(diamonds, 0) + ?,
+                 updatedAt = ?
+             WHERE mrId = ?`,
+            [calculatedDiamonds, updatedAtIST, upload.mrId]
           );
         }
       }
@@ -2837,12 +2861,12 @@ export const reviewUpload = async (req, res) => {
           [pointsToSubtract, movesToSubtract, reviewDateIST, flmId]
         );
 
-        // Subtract hearts and dice rolls if they were awarded (dynamic based on activityDetails)
+        // Subtract diamonds and dice rolls if they were awarded (dynamic based on activityDetails)
         // This logic maintains backward compatibility with hardcoded types (same as approval logic above)
         // Check for brand-based rewards to subtract
         if (activityDetails.brandId) {
           const [brandRows] = await connection.execute(
-            `SELECT hearts, diceRolls, countType FROM brands WHERE id = ?`,
+            `SELECT diamonds, diceRolls, countType FROM brands WHERE id = ?`,
             [activityDetails.brandId]
           );
 
@@ -2869,15 +2893,23 @@ export const reviewUpload = async (req, res) => {
               }
             }
             
-            const brandHearts = Number(brand.hearts) || 0;
-            if (brandHearts > 0) {
-              const heartsToSubtract = brandHearts * multiplier;
+            const brandDiamonds = Number(brand.diamonds) || 0;
+            if (brandDiamonds > 0) {
+              const diamondsToSubtract = brandDiamonds * multiplier;
               await connection.execute(
                 `UPDATE flms 
-                 SET hearts = GREATEST(COALESCE(hearts, 0) - ?, 0),
+                 SET diamonds = GREATEST(COALESCE(diamonds, 0) - ?, 0),
                      updatedAt = ?
                  WHERE flmId = ?`,
-                [heartsToSubtract, reviewDateIST, flmId]
+                [diamondsToSubtract, reviewDateIST, flmId]
+              );
+              // Also subtract diamonds from MR
+              await connection.execute(
+                `UPDATE mrs 
+                 SET diamonds = GREATEST(COALESCE(diamonds, 0) - ?, 0),
+                     updatedAt = ?
+                 WHERE mrId = ?`,
+                [diamondsToSubtract, reviewDateIST, upload.mrId]
               );
             }
 
@@ -2898,7 +2930,7 @@ export const reviewUpload = async (req, res) => {
         // Check for camp-based rewards to subtract
         if (activityDetails.campId) {
           const [campRows] = await connection.execute(
-            `SELECT hearts, diceRolls FROM camps WHERE id = ?`,
+            `SELECT diamonds, diceRolls FROM camps WHERE id = ?`,
             [activityDetails.campId]
           );
 
@@ -2907,15 +2939,23 @@ export const reviewUpload = async (req, res) => {
             // Use noOfCamps from activitySpecificDetails
             const noOfCamps = Number(activityDetails.noOfCamps) || 1;
             
-            const campHearts = Number(camp.hearts) || 0;
-            if (campHearts > 0) {
-              const heartsToSubtract = campHearts * noOfCamps;
+            const campDiamonds = Number(camp.diamonds) || 0;
+            if (campDiamonds > 0) {
+              const diamondsToSubtract = campDiamonds * noOfCamps;
               await connection.execute(
                 `UPDATE flms 
-                 SET hearts = GREATEST(COALESCE(hearts, 0) - ?, 0),
+                 SET diamonds = GREATEST(COALESCE(diamonds, 0) - ?, 0),
                      updatedAt = ?
                  WHERE flmId = ?`,
-                [heartsToSubtract, reviewDateIST, flmId]
+                [diamondsToSubtract, reviewDateIST, flmId]
+              );
+              // Also subtract diamonds from MR
+              await connection.execute(
+                `UPDATE mrs 
+                 SET diamonds = GREATEST(COALESCE(diamonds, 0) - ?, 0),
+                     updatedAt = ?
+                 WHERE mrId = ?`,
+                [diamondsToSubtract, reviewDateIST, upload.mrId]
               );
             }
 
@@ -2933,17 +2973,25 @@ export const reviewUpload = async (req, res) => {
           }
         }
         
-        // Check for calculated hearts from new activity types to subtract
+        // Check for calculated diamonds from new activity types to subtract
         const isLegacyType = upload.type === 'prescription' || upload.type === 'pob' || upload.type === 'camp';
-        if (!isLegacyType && activityDetails._calculatedHearts) {
-          const calculatedHeartsToSubtract = Number(activityDetails._calculatedHearts) || 0;
-          if (calculatedHeartsToSubtract > 0) {
+        if (!isLegacyType && activityDetails._calculatedDiamonds) {
+          const calculatedDiamondsToSubtract = Number(activityDetails._calculatedDiamonds) || 0;
+          if (calculatedDiamondsToSubtract > 0) {
             await connection.execute(
               `UPDATE flms 
-               SET hearts = GREATEST(COALESCE(hearts, 0) - ?, 0),
+               SET diamonds = GREATEST(COALESCE(diamonds, 0) - ?, 0),
                    updatedAt = ?
                WHERE flmId = ?`,
-              [calculatedHeartsToSubtract, reviewDateIST, flmId]
+              [calculatedDiamondsToSubtract, reviewDateIST, flmId]
+            );
+            // Also subtract diamonds from MR
+            await connection.execute(
+              `UPDATE mrs 
+               SET diamonds = GREATEST(COALESCE(diamonds, 0) - ?, 0),
+                   updatedAt = ?
+               WHERE mrId = ?`,
+              [calculatedDiamondsToSubtract, reviewDateIST, upload.mrId]
             );
           }
         }

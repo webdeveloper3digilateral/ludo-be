@@ -365,9 +365,9 @@ export const uploadFile = async (req, res) => {
     }
 
     // For new activity types (not prescription, pob, camp), use dynamic calculation
-    // Calculate points and hearts based on pointFactor and hearts from activitySpecificFields
+    // Calculate points and diamonds based on pointFactor and diamonds from activitySpecificFields
     const isLegacyType = normalizedType === 'prescription' || normalizedType === 'pob' || normalizedType === 'camp';
-    let calculatedHearts = 0;
+    let calculatedDiamonds = 0;
     
     if (!isLegacyType && totalPoints === 0) {
       // First, check for dropdown fields with options that have pointFactor/hearts
@@ -406,16 +406,16 @@ export const uploadFile = async (req, res) => {
                   optionPointFactor = parsedPointFactor;
                 }
               }
-              if (selectedOption.hearts !== undefined && selectedOption.hearts !== null) {
-                const parsedHearts = Number(selectedOption.hearts);
-                if (!isNaN(parsedHearts) && parsedHearts > 0) {
-                  optionHearts = parsedHearts;
+              if (selectedOption.diamonds !== undefined && selectedOption.diamonds !== null) {
+                const parsedDiamonds = Number(selectedOption.diamonds);
+                if (!isNaN(parsedDiamonds) && parsedDiamonds > 0) {
+                  optionDiamonds = parsedDiamonds;
                 }
               }
             }
             
-            // Only proceed if option has at least one valid pointFactor or hearts
-            if (optionPointFactor !== null || optionHearts !== null) {
+            // Only proceed if option has at least one valid pointFactor or diamonds
+            if (optionPointFactor !== null || optionDiamonds !== null) {
               dropdownBasedCalculation = true;
               
               // Find all numeric fields in activitySpecificFields
@@ -430,9 +430,9 @@ export const uploadFile = async (req, res) => {
                       totalPoints += optionPointFactor * numericValue;
                     }
                     
-                    // Calculate: selectedOption.hearts × numericValue (only if hearts is provided)
-                    if (optionHearts !== null) {
-                      calculatedHearts += optionHearts * numericValue;
+                    // Calculate: selectedOption.diamonds × numericValue (only if diamonds is provided)
+                    if (optionDiamonds !== null) {
+                      calculatedDiamonds += optionDiamonds * numericValue;
                     }
                   }
                 }
@@ -442,7 +442,7 @@ export const uploadFile = async (req, res) => {
         }
       }
       
-      // If no dropdown-based calculation was used, fall back to field-level pointFactor/hearts
+      // If no dropdown-based calculation was used, fall back to field-level pointFactor/diamonds
       if (!dropdownBasedCalculation) {
         // Loop through activitySpecificFields to find numeric fields
         for (const fieldDef of activitySpecificFields) {
@@ -453,9 +453,9 @@ export const uploadFile = async (req, res) => {
             // Check if it's a numeric field (type is 'number' or value can be parsed as number)
             const numericValue = Number(fieldValue);
             if (!isNaN(numericValue) && numericValue > 0) {
-              // Get pointFactor and hearts from field definition
+              // Get pointFactor and diamonds from field definition
               const pointFactor = Number(fieldDef.pointFactor) || 0;
-              const hearts = Number(fieldDef.hearts) || 0;
+              const diamonds = Number(fieldDef.diamonds) || 0;
               
               // Calculate points: pointFactor * numeric field value
               // Example: if numberOfMedicines = 5 and pointFactor = 2, then points = 2 * 5 = 10
@@ -463,10 +463,10 @@ export const uploadFile = async (req, res) => {
                 totalPoints += pointFactor * numericValue;
               }
               
-              // Calculate hearts: hearts * numeric field value
-              // Example: if numberOfMedicines = 5 and hearts = 1, then hearts = 1 * 5 = 5
-              if (hearts > 0) {
-                calculatedHearts += hearts * numericValue;
+              // Calculate diamonds: diamonds * numeric field value
+              // Example: if numberOfMedicines = 5 and diamonds = 1, then diamonds = 1 * 5 = 5
+              if (diamonds > 0) {
+                calculatedDiamonds += diamonds * numericValue;
               }
             }
           }
@@ -593,9 +593,9 @@ export const uploadFile = async (req, res) => {
       }
     }
 
-    // Store calculated hearts for new activity types (if calculated)
-    if (calculatedHearts > 0) {
-      activitySpecificDetails._calculatedHearts = calculatedHearts;
+    // Store calculated diamonds for new activity types (if calculated)
+    if (calculatedDiamonds > 0) {
+      activitySpecificDetails._calculatedDiamonds = calculatedDiamonds;
     }
 
     // Reserved/system fields that should NOT be stored in activitySpecificDetails
@@ -669,9 +669,9 @@ export const uploadFile = async (req, res) => {
       }
     });
 
-    // Store calculated hearts for new activity types (if calculated)
-    if (calculatedHearts > 0) {
-      activitySpecificDetails._calculatedHearts = calculatedHearts;
+    // Store calculated diamonds for new activity types (if calculated)
+    if (calculatedDiamonds > 0) {
+      activitySpecificDetails._calculatedDiamonds = calculatedDiamonds;
     }
 
     // Add activitySpecificDetails as JSON
@@ -760,7 +760,7 @@ export const uploadFile = async (req, res) => {
       // Use values from activitySpecificDetails (already built above) to determine multiplier
       if (brandId) {
         const [brandRows] = await connection.execute(
-          `SELECT hearts, diceRolls, countType FROM brands WHERE id = ?`,
+          `SELECT diamonds, diceRolls, countType FROM brands WHERE id = ?`,
           [brandId]
         );
 
@@ -786,15 +786,23 @@ export const uploadFile = async (req, res) => {
             }
           }
           
-          const brandHearts = Number(brandData.hearts) || 0;
-          if (brandHearts > 0) {
-            const heartsToAward = brandHearts * multiplier;
+          const brandDiamonds = Number(brandData.diamonds) || 0;
+          if (brandDiamonds > 0) {
+            const diamondsToAward = brandDiamonds * multiplier;
             await connection.execute(
               `UPDATE flms 
-               SET hearts = COALESCE(hearts, 0) + ?,
+               SET diamonds = COALESCE(diamonds, 0) + ?,
                    updatedAt = ?
                WHERE flmId = ?`,
-              [heartsToAward, istDateTimeString, flmId]
+              [diamondsToAward, istDateTimeString, flmId]
+            );
+            // Also award diamonds to MR
+            await connection.execute(
+              `UPDATE mrs 
+               SET diamonds = COALESCE(diamonds, 0) + ?,
+                   updatedAt = ?
+               WHERE mrId = ?`,
+              [diamondsToAward, istDateTimeString, mrId]
             );
           }
 
@@ -812,7 +820,7 @@ export const uploadFile = async (req, res) => {
         }
       } else if (campId) {
         const [campRows] = await connection.execute(
-          `SELECT hearts, diceRolls FROM camps WHERE id = ?`,
+          `SELECT diamonds, diceRolls FROM camps WHERE id = ?`,
           [campId]
         );
 
@@ -821,15 +829,23 @@ export const uploadFile = async (req, res) => {
           // Use noOfCamps from activitySpecificDetails
           const noOfCampsInt = parseInt(activitySpecificDetails.noOfCamps) || 1;
           
-          const campHearts = Number(campData.hearts) || 0;
-          if (campHearts > 0) {
-            const heartsToAward = campHearts * noOfCampsInt;
+          const campDiamonds = Number(campData.diamonds) || 0;
+          if (campDiamonds > 0) {
+            const diamondsToAward = campDiamonds * noOfCampsInt;
             await connection.execute(
               `UPDATE flms 
-               SET hearts = COALESCE(hearts, 0) + ?,
+               SET diamonds = COALESCE(diamonds, 0) + ?,
                    updatedAt = ?
                WHERE flmId = ?`,
-              [heartsToAward, istDateTimeString, flmId]
+              [diamondsToAward, istDateTimeString, flmId]
+            );
+            // Also award diamonds to MR
+            await connection.execute(
+              `UPDATE mrs 
+               SET diamonds = COALESCE(diamonds, 0) + ?,
+                   updatedAt = ?
+               WHERE mrId = ?`,
+              [diamondsToAward, istDateTimeString, mrId]
             );
           }
 
@@ -847,15 +863,23 @@ export const uploadFile = async (req, res) => {
         }
       }
 
-      // Award calculated hearts for new activity types (not prescription, pob, camp) during auto-approval
+      // Award calculated diamonds for new activity types (not prescription, pob, camp) during auto-approval
       const isLegacyType = normalizedType === 'prescription' || normalizedType === 'pob' || normalizedType === 'camp';
-      if (!isLegacyType && calculatedHearts > 0) {
+      if (!isLegacyType && calculatedDiamonds > 0) {
         await connection.execute(
           `UPDATE flms 
-           SET hearts = COALESCE(hearts, 0) + ?,
+           SET diamonds = COALESCE(diamonds, 0) + ?,
                updatedAt = ?
            WHERE flmId = ?`,
-          [calculatedHearts, istDateTimeString, flmId]
+          [calculatedDiamonds, istDateTimeString, flmId]
+        );
+        // Also award diamonds to MR
+        await connection.execute(
+          `UPDATE mrs 
+           SET diamonds = COALESCE(diamonds, 0) + ?,
+               updatedAt = ?
+           WHERE mrId = ?`,
+          [calculatedDiamonds, istDateTimeString, mrId]
         );
       }
     }
@@ -2125,7 +2149,7 @@ export const resubmitUploads = async (req, res) => {
 
     // Handle new activity types (not prescription, pob, camp) - use dynamic calculation
     const isLegacyType = uploadType === 'prescription' || uploadType === 'pob' || uploadType === 'camp';
-    let calculatedHearts = 0;
+    let calculatedDiamonds = 0;
     
     if (!isLegacyType && totalPoints === 0) {
       // Parse activitySpecificFields from activityType
@@ -2145,14 +2169,14 @@ export const resubmitUploads = async (req, res) => {
         }
       }
 
-      // First, check for dropdown fields with options that have pointFactor/hearts
+      // First, check for dropdown fields with options that have pointFactor/diamonds
       const dropdownFields = activitySpecificFields.filter(field => 
         field.type === 'dropdown' && 
         Array.isArray(field.options) && 
         field.options.length > 0
       );
       
-      // Check if any dropdown option has pointFactor or hearts
+      // Check if any dropdown option has pointFactor or diamonds
       let dropdownBasedCalculation = false;
       for (const dropdownField of dropdownFields) {
         // Get value from request body or activityDetails
@@ -2168,10 +2192,10 @@ export const resubmitUploads = async (req, res) => {
           });
           
           if (selectedOption) {
-            // Check if this option has pointFactor or hearts
+            // Check if this option has pointFactor or diamonds
             // Only use if explicitly provided (not null/undefined)
             let optionPointFactor = null;
-            let optionHearts = null;
+            let optionDiamonds = null;
             
             if (typeof selectedOption === 'object' && selectedOption !== null) {
               // Only set if explicitly provided and not null
@@ -2181,16 +2205,16 @@ export const resubmitUploads = async (req, res) => {
                   optionPointFactor = parsedPointFactor;
                 }
               }
-              if (selectedOption.hearts !== undefined && selectedOption.hearts !== null) {
-                const parsedHearts = Number(selectedOption.hearts);
-                if (!isNaN(parsedHearts) && parsedHearts > 0) {
-                  optionHearts = parsedHearts;
+              if (selectedOption.diamonds !== undefined && selectedOption.diamonds !== null) {
+                const parsedDiamonds = Number(selectedOption.diamonds);
+                if (!isNaN(parsedDiamonds) && parsedDiamonds > 0) {
+                  optionDiamonds = parsedDiamonds;
                 }
               }
             }
             
-            // Only proceed if option has at least one valid pointFactor or hearts
-            if (optionPointFactor !== null || optionHearts !== null) {
+            // Only proceed if option has at least one valid pointFactor or diamonds
+            if (optionPointFactor !== null || optionDiamonds !== null) {
               dropdownBasedCalculation = true;
               
               // Find all numeric fields in activitySpecificFields
@@ -2206,9 +2230,9 @@ export const resubmitUploads = async (req, res) => {
                       totalPoints += optionPointFactor * numericValue;
                     }
                     
-                    // Calculate: selectedOption.hearts × numericValue (only if hearts is provided)
-                    if (optionHearts !== null) {
-                      calculatedHearts += optionHearts * numericValue;
+                    // Calculate: selectedOption.diamonds × numericValue (only if diamonds is provided)
+                    if (optionDiamonds !== null) {
+                      calculatedDiamonds += optionDiamonds * numericValue;
                     }
                   }
                 }
@@ -2218,7 +2242,7 @@ export const resubmitUploads = async (req, res) => {
         }
       }
       
-      // If no dropdown-based calculation was used, fall back to field-level pointFactor/hearts
+      // If no dropdown-based calculation was used, fall back to field-level pointFactor/diamonds
       if (!dropdownBasedCalculation) {
         // Loop through activitySpecificFields to find numeric fields
         for (const fieldDef of activitySpecificFields) {
@@ -2230,27 +2254,27 @@ export const resubmitUploads = async (req, res) => {
             // Check if it's a numeric field (type is 'number' or value can be parsed as number)
             const numericValue = Number(fieldValue);
             if (!isNaN(numericValue) && numericValue > 0) {
-              // Get pointFactor and hearts from field definition
+              // Get pointFactor and diamonds from field definition
               const pointFactor = Number(fieldDef.pointFactor) || 0;
-              const hearts = Number(fieldDef.hearts) || 0;
+              const diamonds = Number(fieldDef.diamonds) || 0;
               
               // Calculate points: pointFactor * numeric field value
               if (pointFactor > 0) {
                 totalPoints += pointFactor * numericValue;
               }
               
-              // Calculate hearts: hearts * numeric field value
-              if (hearts > 0) {
-                calculatedHearts += hearts * numericValue;
+              // Calculate diamonds: diamonds * numeric field value
+              if (diamonds > 0) {
+                calculatedDiamonds += diamonds * numericValue;
               }
             }
           }
         }
       }
 
-      // Store calculated hearts for new activity types (if calculated)
-      if (calculatedHearts > 0) {
-        newActivitySpecificDetails._calculatedHearts = calculatedHearts;
+      // Store calculated diamonds for new activity types (if calculated)
+      if (calculatedDiamonds > 0) {
+        newActivitySpecificDetails._calculatedDiamonds = calculatedDiamonds;
       }
 
       // Also handle brand-based calculation for new activity types (if brandName field exists)

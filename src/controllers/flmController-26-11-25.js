@@ -2436,18 +2436,18 @@ const hasActiveOrRecentBoards = async (connection, flmId) => {
   const todayDateIST = formatISTDateForSQL();
   
   // Check for active boards or boards that haven't expired yet
-  // A board expires when: DATE(expirationDate) + INTERVAL 1 DAY <= DATE(NOW())
-  // So a board is still valid if: DATE(expirationDate) + INTERVAL 1 DAY > DATE(NOW())
-  // Or if expirationDate is NULL (no expiration)
+  // A board expires when: endTime <= NOW()
+  // So a board is still valid if: endTime IS NULL OR endTime > NOW()
+  // If endTime is NULL, the board never expires
   const [boardRows] = await connection.execute(
     `SELECT id FROM boards
      WHERE (player1 = ? OR player2 = ? OR player3 = ? OR player4 = ?)
        AND (
-         expirationDate IS NULL 
-         OR DATE(DATE_ADD(expirationDate, INTERVAL 1 DAY)) > DATE(?)
+         endTime IS NULL
+         OR endTime > ?
        )
      LIMIT 1`,
-    [flmId, flmId, flmId, flmId, todayDateIST]
+    [flmId, flmId, flmId, flmId, formatISTDateTimeForSQL()]
   );
   
   return boardRows.length > 0;

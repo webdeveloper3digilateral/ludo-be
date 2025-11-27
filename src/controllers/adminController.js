@@ -174,7 +174,7 @@ export const startGame = async (req, res) => {
       const p4 = rawP4 ?? null;
 
       const [boardResult] = await connection.execute(
-        `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, expirationDate)
+        `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, endTime)
          VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL)`,
         [p1, p2, p3, p4, adminId, creationMode, numberOfPawnsUnlocked]
       );
@@ -246,7 +246,7 @@ export const createBrand = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diceRolls } = req.body;
+    const { brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diamonds, diceRolls } = req.body;
 
     if (!brandName) {
       return res.status(400).json({
@@ -302,8 +302,8 @@ export const createBrand = async (req, res) => {
     const istDateTimeString = formatISTDateTimeForSQL();
 
     await connection.execute(
-      `INSERT INTO brands (id, brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diceRolls, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO brands (id, brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diamonds, diceRolls, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         brandId,
         brandName,
@@ -313,6 +313,7 @@ export const createBrand = async (req, res) => {
         finalUnitFactor,
         finalValueFactor,
         hearts ? parseInt(hearts) : null,
+        diamonds ? parseInt(diamonds) : null,
         diceRolls ? parseInt(diceRolls) : null,
         istDateTimeString,
         istDateTimeString,
@@ -354,7 +355,7 @@ export const updateBrand = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diceRolls } = req.body;
+    const { brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diamonds, diceRolls } = req.body;
 
     // Check if brand exists
     const [brandRows] = await connection.execute(
@@ -473,6 +474,11 @@ export const updateBrand = async (req, res) => {
     if (hearts !== undefined) {
       updates.push("hearts = ?");
       values.push(hearts ? parseInt(hearts) : null);
+    }
+
+    if (diamonds !== undefined) {
+      updates.push("diamonds = ?");
+      values.push(diamonds ? parseInt(diamonds) : null);
     }
 
     if (diceRolls !== undefined) {
@@ -1233,7 +1239,7 @@ export const updateConfig = async (req, res) => {
 export const startGameWithExpiration = async (req, res) => {
   const connection = await db.getConnection();
   try {
-    const { numberOfPawnsUnlocked, creationMode, adminId, expirationDate } = req.body;
+    const { numberOfPawnsUnlocked, creationMode, adminId, endTime } = req.body;
     if (!adminId) {
       return res.status(400).json({ message: "Admin ID is required" });
     }
@@ -1242,14 +1248,14 @@ export const startGameWithExpiration = async (req, res) => {
       return res.status(400).json({ message: "Invalid creation mode" });
     }
 
-    if (!expirationDate) {
-      return res.status(400).json({ message: "Expiration date is required" });
+    if (!endTime) {
+      return res.status(400).json({ message: "End time is required" });
     }
 
-    // Validate expiration date format (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
-    const expirationDateObj = new Date(expirationDate);
-    if (isNaN(expirationDateObj.getTime())) {
-      return res.status(400).json({ message: "Invalid expiration date format" });
+    // Validate end time format (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
+    const endTimeObj = new Date(endTime);
+    if (isNaN(endTimeObj.getTime())) {
+      return res.status(400).json({ message: "Invalid end time format" });
     }
 
     // 1️⃣ Fetch all FLMs
@@ -1400,8 +1406,8 @@ export const startGameWithExpiration = async (req, res) => {
     const pawnColors = ["blue", "red", "green", "yellow"];
     const colorCellArea = { blue: 1, red: 2, green: 3, yellow: 4 };
 
-    // Format expiration date for SQL (IST)
-    const expirationDateIST = formatISTDateTimeForSQL(expirationDateObj);
+    // Format end time for SQL (IST)
+    const endTimeIST = formatISTDateTimeForSQL(endTimeObj);
 
     // 4️⃣ Insert boards and generate pawns
     for (const group of finalBoards) {
@@ -1412,9 +1418,9 @@ export const startGameWithExpiration = async (req, res) => {
       const p4 = rawP4 ?? null;
 
       const [boardResult] = await connection.execute(
-        `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, expirationDate)
+        `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, endTime)
          VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-        [p1, p2, p3, p4, adminId, creationMode, numberOfPawnsUnlocked, expirationDateIST]
+        [p1, p2, p3, p4, adminId, creationMode, numberOfPawnsUnlocked, endTimeIST]
       );
       const boardId = boardResult.insertId;
 
@@ -1466,10 +1472,10 @@ export const startGameWithExpiration = async (req, res) => {
     await connection.commit();
 
     res.status(200).json({
-      message: `${finalBoards.length} boards created successfully with pawns initialized and expiration date set`,
+      message: `${finalBoards.length} boards created successfully with pawns initialized and end time set`,
       totalFLMs,
       totalBoards: finalBoards.length,
-      expirationDate: expirationDateIST,
+      endTime: endTimeIST,
     });
   } catch (error) {
     if (connection) await connection.rollback();
@@ -1938,7 +1944,7 @@ export const givePoints = async (req, res) => {
 export const startManualGame = async(req,res) => {
   const connection = await db.getConnection();
   try{
-    const { playerIds, numberOfPawnsUnlocked, adminId, expirationDate } = req.body;
+    const { playerIds, numberOfPawnsUnlocked, adminId, endTime } = req.body;
     
     // Validate adminId
     if (!adminId) {
@@ -2045,27 +2051,27 @@ export const startManualGame = async(req,res) => {
     // Get current IST time for startTime
     const startTimeIST = formatISTDateTimeForSQL();
 
-    // Format expiration date if provided
-    let expirationDateIST = null;
-    if (expirationDate) {
-      const expirationDateObj = new Date(expirationDate);
-      if (isNaN(expirationDateObj.getTime())) {
+    // Format end time if provided
+    let endTimeIST = null;
+    if (endTime) {
+      const endTimeObj = new Date(endTime);
+      if (isNaN(endTimeObj.getTime())) {
         await connection.rollback();
         return res.status(400).json({ 
           success: false,
-          message: "Invalid expiration date format" 
+          message: "Invalid end time format"
         });
       }
-      expirationDateIST = formatISTDateTimeForSQL(expirationDateObj);
+      endTimeIST = formatISTDateTimeForSQL(endTimeObj);
     }
 
     // Create board
     const [p1, p2, p3, p4] = players;
     
     const [boardResult] = await connection.execute(
-      `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, startTime, expirationDate)
+      `INSERT INTO boards (player1, player2, player3, player4, creator, creationMode, status, numberOfPawnsUnlocked, startTime, endTime)
        VALUES (?, ?, ?, ?, ?, 'manual', 'active', ?, ?, ?)`,
-      [p1, p2, p3 || null, p4 || null, adminId, pawnsUnlocked, startTimeIST, expirationDateIST]
+      [p1, p2, p3 || null, p4 || null, adminId, pawnsUnlocked, startTimeIST, endTimeIST]
     );
     const boardId = boardResult.insertId;
 
@@ -2130,7 +2136,7 @@ export const startManualGame = async(req,res) => {
         creationMode: "manual",
         creator: adminId,
         startTime: startTimeIST,
-        expirationDate: expirationDateIST,
+        endTime: endTimeIST,
         currentTurn: bluePlayerId
       }
     });
@@ -2583,6 +2589,14 @@ export const createActivityType = async (req, res) => {
           });
         }
         
+        // Validate diamonds: optional, but if provided must be a number
+        if (field.diamonds !== undefined && (typeof field.diamonds !== 'number' || isNaN(field.diamonds))) {
+          return res.status(400).json({
+            success: false,
+            message: `activitySpecificFields[${i}]: diamonds must be a number`,
+          });
+        }
+        
         // Validate dropdown fields: must have options array
         if (field.type === 'dropdown') {
           if (!field.options || !Array.isArray(field.options)) {
@@ -2626,6 +2640,15 @@ export const createActivityType = async (req, res) => {
                   return res.status(400).json({
                     success: false,
                     message: `activitySpecificFields[${i}]: options[${j}].hearts must be a number or null`,
+                  });
+                }
+              }
+              // Validate diamonds: optional, can be null, undefined, or a number
+              if (option.diamonds !== undefined && option.diamonds !== null) {
+                if (typeof option.diamonds !== 'number' || isNaN(option.diamonds)) {
+                  return res.status(400).json({
+                    success: false,
+                    message: `activitySpecificFields[${i}]: options[${j}].diamonds must be a number or null`,
                   });
                 }
               }
@@ -2828,6 +2851,15 @@ export const updateActivityType = async (req, res) => {
             });
           }
           
+          // Validate diamonds: optional, but if provided must be a number
+          if (field.diamonds !== undefined && (typeof field.diamonds !== 'number' || isNaN(field.diamonds))) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: `activitySpecificFields[${i}]: diamonds must be a number`,
+            });
+          }
+          
           // Validate dropdown fields: must have options array
           if (field.type === 'dropdown') {
             if (!field.options || !Array.isArray(field.options)) {
@@ -2876,6 +2908,16 @@ export const updateActivityType = async (req, res) => {
                     return res.status(400).json({
                       success: false,
                       message: `activitySpecificFields[${i}]: options[${j}].hearts must be a number or null`,
+                    });
+                  }
+                }
+                // Validate diamonds: optional, can be null, undefined, or a number
+                if (option.diamonds !== undefined && option.diamonds !== null) {
+                  if (typeof option.diamonds !== 'number' || isNaN(option.diamonds)) {
+                    await connection.rollback();
+                    return res.status(400).json({
+                      success: false,
+                      message: `activitySpecificFields[${i}]: options[${j}].diamonds must be a number or null`,
                     });
                   }
                 }
@@ -3383,4 +3425,417 @@ export const deleteActivityType = async (req, res) => {
 //   } finally {
 //     if (connection) connection.release();
 //   }
-// };
+
+
+// Give dice rolls to all players in a specific role
+export const giveDiceRollsToRole = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const { adminId, userType, diceRolls, reason } = req.body;
+
+    // Validation
+    if (!adminId) {
+      return res.status(400).json({
+        success: false,
+        message: "Admin ID is required",
+      });
+    }
+
+    const normalizedUserType = (userType || "flm").toLowerCase();
+    if (!["flm", "mr", "slm", "tlm"].includes(normalizedUserType)) {
+      return res.status(400).json({
+        success: false,
+        message: "User type must be 'flm', 'mr', 'slm', or 'tlm'",
+      });
+    }
+
+    if (!diceRolls || isNaN(parseInt(diceRolls))) {
+      return res.status(400).json({
+        success: false,
+        message: "Dice rolls must be a valid number",
+      });
+    }
+
+    const diceRollsInt = parseInt(diceRolls);
+    if (diceRollsInt <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Dice rolls must be greater than 0",
+      });
+    }
+
+    // Verify admin exists
+    const [adminRows] = await connection.execute(
+      "SELECT adminId FROM admins WHERE adminId = ?",
+      [adminId]
+    );
+
+    if (adminRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin not found",
+      });
+    }
+
+    // Determine table and field names based on user type
+    let recipientTable;
+    let userIdField;
+    let diceRollBalanceField;
+
+    if (normalizedUserType === "flm") {
+      recipientTable = "flms";
+      userIdField = "flmId";
+      diceRollBalanceField = "currentDiceRollBalance";
+    } else if (normalizedUserType === "mr") {
+      recipientTable = "mrs";
+      userIdField = "mrId";
+      diceRollBalanceField = "diceRollBalance";
+    } else if (normalizedUserType === "slm") {
+      recipientTable = "slms";
+      userIdField = "slmId";
+      diceRollBalanceField = "currentDiceRollBalance";
+    } else if (normalizedUserType === "tlm") {
+      recipientTable = "tlms";
+      userIdField = "tlmId";
+      diceRollBalanceField = "currentDiceRollBalance";
+    }
+
+    await connection.beginTransaction();
+
+    // Get all active players of the specified role
+    const [playerRows] = await connection.execute(
+      `SELECT ${userIdField} AS userId FROM ${recipientTable} WHERE status = 'Active'`
+    );
+
+    if (playerRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: `No active ${normalizedUserType.toUpperCase()} players found`,
+      });
+    }
+
+    const istDateTimeString = formatISTDateTimeForSQL();
+    const updatedPlayers = [];
+    const failedPlayers = [];
+
+    // Update each player's dice roll balance and record in adminDiceRolls table
+    for (const player of playerRows) {
+      try {
+        // Get current dice roll balance for logging/response
+        const [currentDataRows] = await connection.execute(
+          `SELECT ${diceRollBalanceField} AS diceRollBalance FROM ${recipientTable} WHERE ${userIdField} = ?`,
+          [player.userId]
+        );
+
+        const currentDiceRollBalance = currentDataRows[0]?.diceRollBalance || 0;
+        const newDiceRollBalance = currentDiceRollBalance + diceRollsInt;
+
+        // Update player's dice roll balance atomically (prevents race conditions)
+        await connection.execute(
+          `UPDATE ${recipientTable} 
+           SET ${diceRollBalanceField} = ${diceRollBalanceField} + ?, updatedAt = ?
+           WHERE ${userIdField} = ?`,
+          [diceRollsInt, istDateTimeString, player.userId]
+        );
+
+        // Record in adminDiceRolls table
+        const adminDiceRollsId = crypto.randomUUID();
+        // await connection.execute(
+        //   `INSERT INTO adminDiceRolls (id, adminId, userId, userType, diceRolls, reason, createdAt, updatedAt)
+        //    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        //   [adminDiceRollsId, adminId, player.userId, normalizedUserType, diceRollsInt, reason || null, istDateTimeString, istDateTimeString]
+        // );
+        await connection.execute(
+          `INSERT INTO adminDiceRolls (id, adminId, userId, userType, diceRolls, previousBalance, newBalance, reason, mode, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            adminDiceRollsId,
+            adminId,
+            player.userId,
+            normalizedUserType,
+            diceRollsInt,
+            currentDiceRollBalance,   // <=== ADD
+            newDiceRollBalance,       // <=== ADD
+            reason || null,
+            "role",
+            istDateTimeString,
+            istDateTimeString
+          ]
+        );
+        
+
+        updatedPlayers.push({
+          userId: player.userId,
+          previousDiceRollBalance: currentDiceRollBalance,
+          newDiceRollBalance: newDiceRollBalance,
+        });
+      } catch (error) {
+        console.error(`Error updating player ${player.userId}:`, error);
+        failedPlayers.push({
+          userId: player.userId,
+          error: error.message,
+        });
+      }
+    }
+
+    await connection.commit();
+
+    res.status(200).json({
+      success: true,
+      message: `Dice rolls given successfully to ${updatedPlayers.length} ${normalizedUserType.toUpperCase()} players`,
+      data: {
+        adminId,
+        userType: normalizedUserType,
+        diceRollsGiven: diceRollsInt,
+        totalPlayers: playerRows.length,
+        updatedPlayers: updatedPlayers.length,
+        failedPlayers: failedPlayers.length,
+        players: updatedPlayers,
+        failures: failedPlayers.length > 0 ? failedPlayers : undefined,
+        reason: reason || null,
+        createdAt: istDateTimeString,
+      },
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error giving dice rolls to role:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+
+// Give dice rolls to selected players (same amount or different amounts per player)
+export const giveDiceRollsToPlayers = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const { adminId, diceRolls, players, reason } = req.body;
+
+    // Validation
+    if (!adminId) {
+      return res.status(400).json({
+        success: false,
+        message: "Admin ID is required",
+      });
+    }
+
+    if (!players || !Array.isArray(players) || players.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Players array is required and must not be empty",
+      });
+    }
+
+    // Check if global diceRolls is provided
+    const hasGlobalDiceRolls = diceRolls !== undefined && diceRolls !== null;
+    let globalDiceRollsInt = null;
+
+    if (hasGlobalDiceRolls) {
+      // Validate global diceRolls
+      if (isNaN(parseInt(diceRolls))) {
+        return res.status(400).json({
+          success: false,
+          message: "diceRolls must be a valid number",
+        });
+      }
+
+      globalDiceRollsInt = parseInt(diceRolls);
+      if (globalDiceRollsInt <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "diceRolls must be greater than 0",
+        });
+      }
+    }
+
+    // Verify admin exists
+    const [adminRows] = await connection.execute(
+      "SELECT adminId FROM admins WHERE adminId = ?",
+      [adminId]
+    );
+
+    if (adminRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin not found",
+      });
+    }
+
+    await connection.beginTransaction();
+
+    const istDateTimeString = formatISTDateTimeForSQL();
+    const updatedPlayers = [];
+    const failedPlayers = [];
+
+    // Process each player
+    for (const player of players) {
+      try {
+        // Validate player object
+        if (!player.userId) {
+          failedPlayers.push({
+            player,
+            error: "userId is required",
+          });
+          continue;
+        }
+
+        // Determine dice rolls: use global if provided, otherwise use player-specific
+        let diceRollsInt;
+        if (hasGlobalDiceRolls) {
+          // Use global diceRolls for all players
+          diceRollsInt = globalDiceRollsInt;
+        } else {
+          // Each player must have their own diceRolls
+          if (!player.diceRolls || isNaN(parseInt(player.diceRolls))) {
+            failedPlayers.push({
+              userId: player.userId,
+              error: "diceRolls must be a valid number (either provide global diceRolls or diceRolls for each player)",
+            });
+            continue;
+          }
+
+          diceRollsInt = parseInt(player.diceRolls);
+          if (diceRollsInt <= 0) {
+            failedPlayers.push({
+              userId: player.userId,
+              error: "diceRolls must be greater than 0",
+            });
+            continue;
+          }
+        }
+
+        const normalizedUserType = (player.userType || "flm").toLowerCase();
+        if (!["flm", "mr", "slm", "tlm"].includes(normalizedUserType)) {
+          failedPlayers.push({
+            userId: player.userId,
+            error: "userType must be 'flm', 'mr', 'slm', or 'tlm'",
+          });
+          continue;
+        }
+
+        // Determine table and field names based on user type
+        let recipientTable;
+        let userIdField;
+        let diceRollBalanceField;
+
+        if (normalizedUserType === "flm") {
+          recipientTable = "flms";
+          userIdField = "flmId";
+          diceRollBalanceField = "currentDiceRollBalance";
+        } else if (normalizedUserType === "mr") {
+          recipientTable = "mrs";
+          userIdField = "mrId";
+          diceRollBalanceField = "diceRollBalance";
+        } else if (normalizedUserType === "slm") {
+          recipientTable = "slms";
+          userIdField = "slmId";
+          diceRollBalanceField = "currentDiceRollBalance";
+        } else if (normalizedUserType === "tlm") {
+          recipientTable = "tlms";
+          userIdField = "tlmId";
+          diceRollBalanceField = "currentDiceRollBalance";
+        }
+
+        // Verify player exists
+        const [playerRows] = await connection.execute(
+          `SELECT ${userIdField} AS userId, ${diceRollBalanceField} AS diceRollBalance FROM ${recipientTable} WHERE ${userIdField} = ?`,
+          [player.userId]
+        );
+
+        if (playerRows.length === 0) {
+          failedPlayers.push({
+            userId: player.userId,
+            userType: normalizedUserType,
+            error: `${normalizedUserType.toUpperCase()} not found`,
+          });
+          continue;
+        }
+
+        const currentDiceRollBalance = playerRows[0].diceRollBalance || 0;
+        const newDiceRollBalance = currentDiceRollBalance + diceRollsInt;
+
+        // Update player's dice roll balance atomically (prevents race conditions)
+        await connection.execute(
+          `UPDATE ${recipientTable} 
+           SET ${diceRollBalanceField} = ${diceRollBalanceField} + ?, updatedAt = ?
+           WHERE ${userIdField} = ?`,
+          [diceRollsInt, istDateTimeString, player.userId]
+        );
+
+        // Record in adminDiceRolls table
+        const adminDiceRollsId = crypto.randomUUID();
+        // await connection.execute(
+        //   `INSERT INTO adminDiceRolls (id, adminId, userId, userType, diceRolls, reason, createdAt, updatedAt)
+        //    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        //   [adminDiceRollsId, adminId, player.userId, normalizedUserType, diceRollsInt, reason || null, istDateTimeString, istDateTimeString]
+        // );
+        await connection.execute(
+          `INSERT INTO adminDiceRolls (id, adminId, userId, userType, diceRolls, previousBalance, newBalance, reason, mode, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            adminDiceRollsId,
+            adminId,
+            player.userId,
+            normalizedUserType,
+            diceRollsInt,
+            currentDiceRollBalance,  // <=== ADD
+            newDiceRollBalance,      // <=== ADD
+            reason || null,
+            "player",
+            istDateTimeString,
+            istDateTimeString
+          ]
+        );
+        
+
+        updatedPlayers.push({
+          userId: player.userId,
+          userType: normalizedUserType,
+          diceRollsGiven: diceRollsInt,
+          previousDiceRollBalance: currentDiceRollBalance,
+          newDiceRollBalance: newDiceRollBalance,
+        });
+      } catch (error) {
+        console.error(`Error updating player ${player.userId}:`, error);
+        failedPlayers.push({
+          userId: player.userId || "unknown",
+          error: error.message,
+        });
+      }
+    }
+
+    await connection.commit();
+
+    res.status(200).json({
+      success: true,
+      message: `Dice rolls given successfully to ${updatedPlayers.length} player(s)`,
+      data: {
+        adminId,
+        totalPlayers: players.length,
+        updatedPlayers: updatedPlayers.length,
+        failedPlayers: failedPlayers.length,
+        players: updatedPlayers,
+        failures: failedPlayers.length > 0 ? failedPlayers : undefined,
+        reason: reason || null,
+        createdAt: istDateTimeString,
+      },
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error giving dice rolls to players:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+

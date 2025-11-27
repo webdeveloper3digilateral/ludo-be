@@ -3,7 +3,7 @@ import db from "../config/db.js";
 import { formatISTDateTimeForSQL, formatISTDateForSQL, getISTDateTime } from "./istDateTime.js";
 
 /**
- * Check and finish expired boards based on expiration date + 1 day
+ * Check and finish expired boards based on endTime
  * Runs daily at 12:00 AM IST
  */
 export const checkExpiredBoards = async () => {
@@ -21,23 +21,21 @@ export const checkExpiredBoards = async () => {
     // Also get just the date part for comparison
     const todayDateIST = formatISTDateForSQL(todayStart);
 
-    // Find boards where expirationDate + 1 day has passed and status is not 'finished'
-    // Logic: If expirationDate is 2025-11-22, then expirationDate + 1 day = 2025-11-23
-    // The board expires on 2025-11-23 (the day after expiration date)
-    // We check: DATE(expirationDate) + INTERVAL 1 DAY <= DATE(NOW())
-    // Example: If today is 2025-11-23 and expirationDate is 2025-11-22:
-    //   DATE_ADD(2025-11-22, INTERVAL 1 DAY) = 2025-11-23
-    //   DATE(2025-11-23) <= DATE(2025-11-23) = TRUE, so it expires
-    // 
-    // Using CONVERT_TZ to ensure we're comparing dates in IST timezone
-    // expirationDate is stored in IST, and we compare with current IST date
+    // Find boards where endTime has passed and status is not 'finished'
+    // Logic: If endTime is 2025-11-30 00:00:00, the board expires at 2025-11-30 00:00:00
+    // The board is valid until endTime, and expires when current time >= endTime
+    // We check: endTime <= NOW()
+    // Example: If now is 2025-11-30 00:00:00 and endTime is 2025-11-30 00:00:00:
+    //   2025-11-30 00:00:00 <= 2025-11-30 00:00:00 = TRUE, so it expires
+    //
+    // endTime is stored in IST, and we compare with current IST datetime
     const [expiredBoards] = await connection.execute(
       `SELECT id, player1, player2, player3, player4, winner1, winner2, winner3, loser
        FROM boards
-       WHERE expirationDate IS NOT NULL
-         AND DATE(DATE_ADD(expirationDate, INTERVAL 1 DAY)) <= DATE(?)
+       WHERE endTime IS NOT NULL
+         AND endTime <= ?
          AND status != 'finished'`,
-      [todayDateIST]
+      [formatISTDateTimeForSQL()]  // Use current IST datetime
     );
 
     if (expiredBoards.length === 0) {

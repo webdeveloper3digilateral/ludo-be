@@ -20,6 +20,7 @@ CREATE TABLE `brands` (
   `brandName` varchar(255) NOT NULL,
   `points` int DEFAULT NULL,
   `hearts` int DEFAULT '0',
+  `diamonds` int DEFAULT Null,
   `diceRolls` int DEFAULT '0',
   `defaultRxnDuration` int DEFAULT '1',
   `countType` enum('unit','value') DEFAULT NULL,
