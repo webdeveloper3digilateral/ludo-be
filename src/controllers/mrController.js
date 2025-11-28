@@ -370,15 +370,15 @@ export const uploadFile = async (req, res) => {
     let calculatedDiamonds = 0;
     
     if (!isLegacyType && totalPoints === 0) {
-      // First, check for dropdown fields with options that have pointFactor/hearts
-      // This allows dropdown selection to determine pointFactor/hearts, then multiply by numeric field
+      // First, check for dropdown fields with options that have pointFactor/diamonds
+      // This allows dropdown selection to determine pointFactor/diamonds, then multiply by numeric field
       const dropdownFields = activitySpecificFields.filter(field => 
         field.type === 'dropdown' && 
         Array.isArray(field.options) && 
         field.options.length > 0
       );
       
-      // Check if any dropdown option has pointFactor or hearts
+      // Check if any dropdown option has pointFactor or diamonds
       let dropdownBasedCalculation = false;
       for (const dropdownField of dropdownFields) {
         const dropdownValue = req.body[dropdownField.fieldName];
@@ -393,10 +393,10 @@ export const uploadFile = async (req, res) => {
           });
           
           if (selectedOption) {
-            // Check if this option has pointFactor or hearts
+            // Check if this option has pointFactor or diamonds
             // Only use if explicitly provided (not null/undefined)
             let optionPointFactor = null;
-            let optionHearts = null;
+            let optionDiamonds = null;
             
             if (typeof selectedOption === 'object' && selectedOption !== null) {
               // Only set if explicitly provided and not null
@@ -593,7 +593,8 @@ export const uploadFile = async (req, res) => {
       }
     }
 
-    // Store calculated diamonds for new activity types (if calculated)
+    // Store calculated diamonds for tracking (awarded immediately above, consistent with points/dice rolls)
+    // This is needed for rejection logic to subtract the correct amount
     if (calculatedDiamonds > 0) {
       activitySpecificDetails._calculatedDiamonds = calculatedDiamonds;
     }
@@ -669,10 +670,7 @@ export const uploadFile = async (req, res) => {
       }
     });
 
-    // Store calculated diamonds for new activity types (if calculated)
-    if (calculatedDiamonds > 0) {
-      activitySpecificDetails._calculatedDiamonds = calculatedDiamonds;
-    }
+    // Diamonds are now awarded immediately above (consistent with points/dice rolls)
 
     // Add activitySpecificDetails as JSON
     insertFields.push("activitySpecificDetails");
@@ -748,7 +746,7 @@ export const uploadFile = async (req, res) => {
 
       // Add points and dice rolls to FLM
       await connection.execute(
-        `UPDATE flms 
+        `UPDATE flms
          SET points = COALESCE(points, 0) + ?,
              currentDiceRollBalance = COALESCE(currentDiceRollBalance, 0) + ?,
              updatedAt = ?
@@ -756,7 +754,26 @@ export const uploadFile = async (req, res) => {
         [totalPoints, movesToAdd, istDateTimeString, flmId]
       );
 
-      // Award hearts and/or dice rolls based on activity type (dynamic)
+      // Award diamonds immediately for new activity types (consistent with points/dice rolls)
+      if (calculatedDiamonds > 0) {
+        await connection.execute(
+          `UPDATE flms
+           SET diamonds = COALESCE(diamonds, 0) + ?,
+               updatedAt = ?
+           WHERE flmId = ?`,
+          [calculatedDiamonds, istDateTimeString, flmId]
+        );
+        // Also award diamonds to MR
+        await connection.execute(
+          `UPDATE mrs
+           SET diamonds = COALESCE(diamonds, 0) + ?,
+               updatedAt = ?
+           WHERE mrId = ?`,
+          [calculatedDiamonds, istDateTimeString, mrId]
+        );
+      }
+
+      // Award diamonds and/or dice rolls based on activity type (dynamic)
       // Use values from activitySpecificDetails (already built above) to determine multiplier
       if (brandId) {
         const [brandRows] = await connection.execute(
@@ -863,25 +880,7 @@ export const uploadFile = async (req, res) => {
         }
       }
 
-      // Award calculated diamonds for new activity types (not prescription, pob, camp) during auto-approval
-      const isLegacyType = normalizedType === 'prescription' || normalizedType === 'pob' || normalizedType === 'camp';
-      if (!isLegacyType && calculatedDiamonds > 0) {
-        await connection.execute(
-          `UPDATE flms 
-           SET diamonds = COALESCE(diamonds, 0) + ?,
-               updatedAt = ?
-           WHERE flmId = ?`,
-          [calculatedDiamonds, istDateTimeString, flmId]
-        );
-        // Also award diamonds to MR
-        await connection.execute(
-          `UPDATE mrs 
-           SET diamonds = COALESCE(diamonds, 0) + ?,
-               updatedAt = ?
-           WHERE mrId = ?`,
-          [calculatedDiamonds, istDateTimeString, mrId]
-        );
-      }
+      // Diamonds are already awarded immediately during upload (consistent with points/dice rolls)
     }
 
     await connection.commit();
@@ -2272,7 +2271,8 @@ export const resubmitUploads = async (req, res) => {
         }
       }
 
-      // Store calculated diamonds for new activity types (if calculated)
+      // Store calculated diamonds for tracking (awarded during initial upload, consistent with points/dice rolls)
+      // This is needed for rejection logic to subtract the correct amount
       if (calculatedDiamonds > 0) {
         newActivitySpecificDetails._calculatedDiamonds = calculatedDiamonds;
       }

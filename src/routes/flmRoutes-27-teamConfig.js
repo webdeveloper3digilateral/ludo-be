@@ -47,18 +47,18 @@ router.get("/leaderboard/home", getHomeLeaderboard);
 // router.get("/leaderboard/points", getPointsLeaderboard);
 // router.get("/leaderboard/prescription-points", getPrescriptionPointsLeaderboard);
 
-// router.get("/:managerId/prescriptions/pending", getPendingPrescriptionsForFlm);
-router.get("/:managerId/uploads/pending", getPendingUploadsForFlm);
-// router.post("/:managerId/prescriptions/:prescriptionId/review", reviewPrescription);
-router.post("/:managerId/uploads/:uploadId/review", reviewUpload);
-// router.get("/:managerId/prescriptions/:prescriptionId/download", downloadUploadImage);
-router.get("/:managerId/uploads/:uploadId/download", downloadUploadImage);
-router.get("/:managerId/uploads/:uploadId/view", viewUploadImage);
-// router.get("/:managerId/prescriptions/:prescriptionId", getPrescriptionForFlm);
-router.get("/:managerId/uploads/:uploadId", getUploadForFlm);
+// router.get("/:flmId/prescriptions/pending", getPendingPrescriptionsForFlm);
+router.get("/:flmId/uploads/pending", getPendingUploadsForFlm);
+// router.post("/:flmId/prescriptions/:prescriptionId/review", reviewPrescription);
+router.post("/:flmId/uploads/:uploadId/review", reviewUpload);
+// router.get("/:flmId/prescriptions/:prescriptionId/download", downloadUploadImage);
+router.get("/:flmId/uploads/:uploadId/download", downloadUploadImage);
+router.get("/:flmId/uploads/:uploadId/view", viewUploadImage);
+// router.get("/:flmId/prescriptions/:prescriptionId", getPrescriptionForFlm);
+router.get("/:flmId/uploads/:uploadId", getUploadForFlm);
 
-router.get("/:managerId/mrs", getMrsByFlm);
-router.patch("/:managerId/mrs/:mrId/access", updateMrAccess);
+router.get("/:flmId/mrs", getMrsByFlm);
+router.patch("/:flmId/mrs/:mrId/access", updateMrAccess);
 
 router.get("/stats/:flmId", getFlmStats);
 

@@ -65,10 +65,10 @@ export const handleExcelSheetUpload = async (req, res) => {
         } else {
           // Skip teamName update if not provided, but keep existing value for inheritance
           finalTlmTeamName = tlmRows[0].teamName;
-          await db.execute(
+        await db.execute(
             `UPDATE tlms SET tlmName=?, password=?, hq=?, zone=?, adminId=?, updatedAt=NOW() WHERE tlmId=?`,
             [row.TLMNAME, row.TLMPASSWORD, row.TLMHQ, row.TLMZONE, adminId, row.TLMID]
-          );
+        );
         }
       } else {
         // For INSERT, use teamName if provided, otherwise null
@@ -116,10 +116,10 @@ export const handleExcelSheetUpload = async (req, res) => {
           );
         } else {
           // Skip teamName update if not provided and no inheritance
-          await db.execute(
+        await db.execute(
             `UPDATE slms SET slmName=?, password=?, hq=?, region=?, zone=?, adminId=?, updatedAt=NOW() WHERE slmId=?`,
             [row.SLMNAME, row.SLMPASSWORD, row.SLMHQ, row.SLMREGION, row.SLMZONE, adminId, row.SLMID]
-          );
+        );
         }
       } else {
         // For INSERT, use teamName if provided or inherited, otherwise null
@@ -161,29 +161,29 @@ export const handleExcelSheetUpload = async (req, res) => {
         // Update teamName if we have a value (from Excel or inherited)
         if (isValidValue(finalFlmTeamName)) {
           // Commented out: points and currentDiceRollBalance - will be provided using new APIs
-          await db.execute(
-            `UPDATE flms
-             SET flmName = ?,
-                 password = ?,
-                 hq = ?,
-                 region = ?,
-                 zone = ?,
-                 teamName = ?,
-                 adminId = ?,
+        await db.execute(
+          `UPDATE flms
+           SET flmName = ?,
+               password = ?,
+               hq = ?,
+               region = ?,
+               zone = ?,
+               teamName = ?,
+               adminId = ?,
                  updatedAt = NOW()
-             WHERE flmId = ?`,
-            [
-              row.FLMNAME,
-              row.FLMPASSWORD,
-              row.FLMHQ,
-              row.FLMREGION,
-              row.FLMZONE,
+           WHERE flmId = ?`,
+          [
+            row.FLMNAME,
+            row.FLMPASSWORD,
+            row.FLMHQ,
+            row.FLMREGION,
+            row.FLMZONE,
               finalFlmTeamName,
-              adminId,
-              row.FLMID,
-            ]
-          );
-        } else {
+            adminId,
+            row.FLMID,
+          ]
+        );
+      } else {
           // Skip teamName update if not provided and no inheritance
           // Commented out: points and currentDiceRollBalance - will be provided using new APIs
           await db.execute(
@@ -259,25 +259,25 @@ export const handleExcelSheetUpload = async (req, res) => {
       if (mrRows.length > 0) {
         // Update teamName if we have a value (from Excel or inherited)
         if (isValidValue(finalMrTeamName)) {
-          await db.execute(
+        await db.execute(
             `UPDATE mrs SET mrName=?, email=?, password=?, role=?, hq=?, region=?, zone=?, businessUnit=?, dateOfJoining=?, teamName=?, adminId=?, updatedAt=NOW()
-             WHERE mrId=?`,
-            [
-              row.MRNAME,
-              row.MREMAIL,
-              row.MRPASSWORD,
-              row.MRROLE,
-              row.MRHQ,
-              row.MRREGION,
-              row.MRZONE,
-              row.MRBUSSINESSUNIT,
-              cleanDOJ,
+           WHERE mrId=?`,
+          [
+            row.MRNAME,
+            row.MREMAIL,
+            row.MRPASSWORD,
+            row.MRROLE,
+            row.MRHQ,
+            row.MRREGION,
+            row.MRZONE,
+            row.MRBUSSINESSUNIT,
+            cleanDOJ,
               finalMrTeamName,
-              adminId,
-              row.MRID,
-            ]
-          );
-        } else {
+            adminId,
+            row.MRID,
+          ]
+        );
+      } else {
           // Skip teamName update if not provided and no inheritance
           await db.execute(
             `UPDATE mrs SET mrName=?, email=?, password=?, role=?, hq=?, region=?, zone=?, businessUnit=?, dateOfJoining=?, adminId=?, updatedAt=NOW()

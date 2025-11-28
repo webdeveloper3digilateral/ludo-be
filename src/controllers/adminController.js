@@ -246,7 +246,7 @@ export const createBrand = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diamonds, diceRolls } = req.body;
+    const { brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, diamonds, diceRolls } = req.body;
 
     if (!brandName) {
       return res.status(400).json({
@@ -302,7 +302,7 @@ export const createBrand = async (req, res) => {
     const istDateTimeString = formatISTDateTimeForSQL();
 
     await connection.execute(
-      `INSERT INTO brands (id, brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diamonds, diceRolls, createdAt, updatedAt)
+      `INSERT INTO brands (id, brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, diamonds, diceRolls, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         brandId,
@@ -312,7 +312,6 @@ export const createBrand = async (req, res) => {
         normalizedCountType,
         finalUnitFactor,
         finalValueFactor,
-        hearts ? parseInt(hearts) : null,
         diamonds ? parseInt(diamonds) : null,
         diceRolls ? parseInt(diceRolls) : null,
         istDateTimeString,
@@ -333,7 +332,7 @@ export const createBrand = async (req, res) => {
         countType: normalizedCountType,
         unitFactor: finalUnitFactor,
         valueFactor: finalValueFactor,
-        hearts: hearts ? parseInt(hearts) : null,
+        diamonds: diamonds ? parseInt(diamonds) : null,
         diceRolls: diceRolls ? parseInt(diceRolls) : null,
       },
     });
@@ -355,7 +354,7 @@ export const updateBrand = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diamonds, diceRolls } = req.body;
+    const { brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, diamonds, diceRolls } = req.body;
 
     // Check if brand exists
     const [brandRows] = await connection.execute(
@@ -471,11 +470,6 @@ export const updateBrand = async (req, res) => {
       }
     }
 
-    if (hearts !== undefined) {
-      updates.push("hearts = ?");
-      values.push(hearts ? parseInt(hearts) : null);
-    }
-
     if (diamonds !== undefined) {
       updates.push("diamonds = ?");
       values.push(diamonds ? parseInt(diamonds) : null);
@@ -570,7 +564,7 @@ export const getAllBrands = async (req, res) => {
   try {
     const { search, limit = 100, offset = 0 } = req.query;
 
-    let query = "SELECT id, brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, hearts, diceRolls, createdAt, updatedAt FROM brands WHERE 1=1";
+    let query = "SELECT id, brandName, points, defaultRxnDuration, countType, unitFactor, valueFactor, diamonds, diceRolls, createdAt, updatedAt FROM brands WHERE 1=1";
     const params = [];
 
     // Optional search filter
@@ -625,7 +619,7 @@ export const createCamp = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { campName, points, defaultFactor, hearts, diceRolls } = req.body;
+    const { campName, points, defaultFactor, diamonds, diceRolls } = req.body;
 
     if (!campName) {
       return res.status(400).json({
@@ -653,14 +647,14 @@ export const createCamp = async (req, res) => {
     const istDateTimeString = formatISTDateTimeForSQL();
 
     await connection.execute(
-      `INSERT INTO camps (id, campName, points, defaultFactor, hearts, diceRolls, createdAt, updatedAt)
+      `INSERT INTO camps (id, campName, points, defaultFactor, diamonds, diceRolls, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         campId,
         campName,
         points ? parseInt(points) : 0,
         defaultFactor ? parseInt(defaultFactor) : 1,
-        hearts ? parseInt(hearts) : null,
+        diamonds ? parseInt(diamonds) : null,
         diceRolls ? parseInt(diceRolls) : null,
         istDateTimeString,
         istDateTimeString,
@@ -677,7 +671,7 @@ export const createCamp = async (req, res) => {
         campName,
         points: points ? parseInt(points) : 0,
         defaultFactor: defaultFactor ? parseInt(defaultFactor) : 1,
-        hearts: hearts ? parseInt(hearts) : null,
+        diamonds: diamonds ? parseInt(diamonds) : null,
         diceRolls: diceRolls ? parseInt(diceRolls) : null,
       },
     });
@@ -699,7 +693,7 @@ export const updateCamp = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { campName, points, defaultFactor, hearts, diceRolls } = req.body;
+    const { campName, points, defaultFactor, diamonds, diceRolls } = req.body;
 
     // Check if camp exists
     const [campRows] = await connection.execute(
@@ -750,9 +744,9 @@ export const updateCamp = async (req, res) => {
       values.push(parseInt(defaultFactor) || 1);
     }
 
-    if (hearts !== undefined) {
-      updates.push("hearts = ?");
-      values.push(hearts ? parseInt(hearts) : null);
+    if (diamonds !== undefined) {
+      updates.push("diamonds = ?");
+      values.push(diamonds ? parseInt(diamonds) : null);
     }
 
     if (diceRolls !== undefined) {
@@ -844,7 +838,7 @@ export const getAllCamps = async (req, res) => {
   try {
     const { search, limit = 100, offset = 0 } = req.query;
 
-    let query = "SELECT id, campName, points, defaultFactor, hearts, diceRolls, createdAt, updatedAt FROM camps WHERE 1=1";
+    let query = "SELECT id, campName, points, defaultFactor, diamonds, diceRolls, createdAt, updatedAt FROM camps WHERE 1=1";
     const params = [];
 
     // Optional search filter
@@ -1006,7 +1000,7 @@ export const getAllCamps = async (req, res) => {
 export const config = async (req, res) => {
   const connection = await db.getConnection();
   try {
-    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts, isAutoApprovalAllowed } = req.body;
+    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToDiamonds, isAutoApprovalAllowed } = req.body;
 
     if (
       medianValue === undefined ||
@@ -1024,7 +1018,7 @@ export const config = async (req, res) => {
     const lessFactor = Number(lessMedianFactor);
     const greaterFactor = Number(greaterMedianFactor);
     const pointToDiceRoll = Number(pointToDiceRollRatio);
-    const diceRollsToHeartsValue = diceRollsToHearts !== undefined ? Number(diceRollsToHearts) : 5;
+    const diceRollsToDiamondsValue = diceRollsToDiamonds !== undefined ? Number(diceRollsToDiamonds) : 5;
     const isAutoApprovalAllowedValue = isAutoApprovalAllowed !== undefined ? (isAutoApprovalAllowed ? 1 : 0) : 1;
     
     if (
@@ -1032,11 +1026,11 @@ export const config = async (req, res) => {
       Number.isNaN(lessFactor) ||
       Number.isNaN(greaterFactor) ||
       Number.isNaN(pointToDiceRoll) ||
-      (diceRollsToHearts !== undefined && Number.isNaN(diceRollsToHeartsValue))
+      (diceRollsToDiamonds !== undefined && Number.isNaN(diceRollsToDiamondsValue))
     ) {
       return res.status(400).json({
         success: false,
-        message: "medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, and diceRollsToHearts (if provided) must be valid numbers",
+        message: "medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, and diceRollsToDiamonds (if provided) must be valid numbers",
       });
     }
 
@@ -1050,9 +1044,9 @@ export const config = async (req, res) => {
     await connection.beginTransaction();
 
     await connection.execute(
-      `INSERT INTO config (medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts, isAutoApprovalAllowed)
+      `INSERT INTO config (medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToDiamonds, isAutoApprovalAllowed)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [median, lessFactor, greaterFactor, pointToDiceRoll, diceRollsToHeartsValue, isAutoApprovalAllowedValue]
+      [median, lessFactor, greaterFactor, pointToDiceRoll, diceRollsToDiamondsValue, isAutoApprovalAllowedValue]
     );
 
     await connection.commit();
@@ -1065,7 +1059,7 @@ export const config = async (req, res) => {
         lessMedianFactor: lessFactor,
         greaterMedianFactor: greaterFactor,
         pointToDiceRollRatio: pointToDiceRoll,
-        diceRollsToHearts: diceRollsToHeartsValue,
+        diceRollsToDiamonds: diceRollsToDiamondsValue,
         isAutoApprovalAllowed: isAutoApprovalAllowedValue === 1,
       },
     });
@@ -1084,7 +1078,7 @@ export const updateConfig = async (req, res) => {
   const connection = await db.getConnection();
   try {
     const { id } = req.params;
-    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToHearts, isAutoApprovalAllowed } = req.body;
+    const { medianValue, lessMedianFactor, greaterMedianFactor, pointToDiceRollRatio, diceRollsToDiamonds, isAutoApprovalAllowed } = req.body;
 
     if (!id) {
       return res.status(400).json({
@@ -1164,17 +1158,17 @@ export const updateConfig = async (req, res) => {
       values.push(pointToDiceRoll);
     }
 
-    if (diceRollsToHearts !== undefined) {
-      const diceRollsToHeartsValue = Number(diceRollsToHearts);
-      if (Number.isNaN(diceRollsToHeartsValue)) {
+    if (diceRollsToDiamonds !== undefined) {
+      const diceRollsToDiamondsValue = Number(diceRollsToDiamonds);
+      if (Number.isNaN(diceRollsToDiamondsValue)) {
         await connection.rollback();
         return res.status(400).json({
           success: false,
-          message: "diceRollsToHearts must be a valid number",
+          message: "diceRollsToDiamonds must be a valid number",
         });
       }
-      updates.push("diceRollsToHearts = ?");
-      values.push(diceRollsToHeartsValue);
+      updates.push("diceRollsToDiamonds = ?");
+      values.push(diceRollsToDiamondsValue);
     }
 
     if (isAutoApprovalAllowed !== undefined) {
@@ -2175,9 +2169,9 @@ export const createUploadType = async (req, res) => {
       });
     }
 
-    // Check if upload type already exists
+    // Check if upload type already exists (case-insensitive check)
     const [existingRows] = await connection.execute(
-      "SELECT * FROM activityTypes WHERE typeName = ?",
+      "SELECT * FROM activityTypes WHERE LOWER(typeName) = ?",
       [typeName.toLowerCase()]
     );
 
@@ -2192,7 +2186,10 @@ export const createUploadType = async (req, res) => {
 
     const uploadTypeId = crypto.randomUUID();
     const istDateTimeString = formatISTDateTimeForSQL();
-    const normalizedTypeName = typeName.toLowerCase();
+    // Preserve capitalization: if all lowercase, capitalize first letter; otherwise keep as is
+    const normalizedTypeName = typeName === typeName.toLowerCase()
+      ? typeName.charAt(0).toUpperCase() + typeName.slice(1).toLowerCase()
+      : typeName;
 
     await connection.execute(
       `INSERT INTO activityTypes (id, typeName, folderName, requiresBrand, requiresCamp, isActive, displayOrder, createdAt, updatedAt)
@@ -2281,7 +2278,11 @@ export const updateUploadType = async (req, res) => {
 
     if (typeName !== undefined) {
       updates.push("typeName = ?");
-      values.push(typeName.toLowerCase());
+      // Preserve capitalization: if all lowercase, capitalize first letter; otherwise keep as is
+      const processedTypeName = typeName === typeName.toLowerCase()
+        ? typeName.charAt(0).toUpperCase() + typeName.slice(1).toLowerCase()
+        : typeName;
+      values.push(processedTypeName);
     }
 
     if (folderName !== undefined) {
@@ -2505,9 +2506,9 @@ export const createActivityType = async (req, res) => {
       });
     }
 
-    // Check if activity type already exists
+    // Check if activity type already exists (case-insensitive check)
     const [existingRows] = await connection.execute(
-      "SELECT * FROM activityTypes WHERE typeName = ?",
+      "SELECT * FROM activityTypes WHERE LOWER(typeName) = ?",
       [typeName.toLowerCase()]
     );
 
@@ -2522,7 +2523,10 @@ export const createActivityType = async (req, res) => {
 
     const activityTypeId = crypto.randomUUID();
     const istDateTimeString = formatISTDateTimeForSQL();
-    const normalizedTypeName = typeName.toLowerCase();
+    // Preserve capitalization: if all lowercase, capitalize first letter; otherwise keep as is
+    const normalizedTypeName = typeName === typeName.toLowerCase()
+      ? typeName.charAt(0).toUpperCase() + typeName.slice(1).toLowerCase()
+      : typeName;
 
     // Handle activitySpecificFields - convert to JSON string if provided
     // Expected format: [{fieldName: "campname", type: "string", required: true}, ...]
@@ -2581,11 +2585,11 @@ export const createActivityType = async (req, res) => {
           });
         }
         
-        // Validate hearts: optional, but if provided must be a number
-        if (field.hearts !== undefined && (typeof field.hearts !== 'number' || isNaN(field.hearts))) {
+        // Validate diamonds: optional, but if provided must be a number
+        if (field.diamonds !== undefined && (typeof field.diamonds !== 'number' || isNaN(field.diamonds))) {
           return res.status(400).json({
             success: false,
-            message: `activitySpecificFields[${i}]: hearts must be a number`,
+            message: `activitySpecificFields[${i}]: diamonds must be a number`,
           });
         }
         
@@ -2634,12 +2638,12 @@ export const createActivityType = async (req, res) => {
                   });
                 }
               }
-              // Validate hearts: optional, can be null, undefined, or a number
-              if (option.hearts !== undefined && option.hearts !== null) {
-                if (typeof option.hearts !== 'number' || isNaN(option.hearts)) {
+              // Validate diamonds: optional, can be null, undefined, or a number
+              if (option.diamonds !== undefined && option.diamonds !== null) {
+                if (typeof option.diamonds !== 'number' || isNaN(option.diamonds)) {
                   return res.status(400).json({
                     success: false,
-                    message: `activitySpecificFields[${i}]: options[${j}].hearts must be a number or null`,
+                    message: `activitySpecificFields[${i}]: options[${j}].diamonds must be a number or null`,
                   });
                 }
               }
@@ -2740,9 +2744,9 @@ export const updateActivityType = async (req, res) => {
     }
 
     // If typeName is being updated, check if new name already exists
-    if (typeName && typeName.toLowerCase() !== activityTypeRows[0].typeName) {
+    if (typeName && typeName.toLowerCase() !== activityTypeRows[0].typeName.toLowerCase()) {
       const [existingRows] = await connection.execute(
-        "SELECT * FROM activityTypes WHERE typeName = ? AND id != ?",
+        "SELECT * FROM activityTypes WHERE LOWER(typeName) = ? AND id != ?",
         [typeName.toLowerCase(), id]
       );
 
@@ -2762,7 +2766,11 @@ export const updateActivityType = async (req, res) => {
 
     if (typeName !== undefined) {
       updates.push("typeName = ?");
-      values.push(typeName.toLowerCase());
+      // Preserve capitalization: if all lowercase, capitalize first letter; otherwise keep as is
+      const processedTypeName = typeName === typeName.toLowerCase()
+        ? typeName.charAt(0).toUpperCase() + typeName.slice(1).toLowerCase()
+        : typeName;
+      values.push(processedTypeName);
     }
 
     if (folderName !== undefined) {
@@ -2842,12 +2850,12 @@ export const updateActivityType = async (req, res) => {
             });
           }
           
-          // Validate hearts: optional, but if provided must be a number
-          if (field.hearts !== undefined && (typeof field.hearts !== 'number' || isNaN(field.hearts))) {
+          // Validate diamonds: optional, but if provided must be a number
+          if (field.diamonds !== undefined && (typeof field.diamonds !== 'number' || isNaN(field.diamonds))) {
             await connection.rollback();
             return res.status(400).json({
               success: false,
-              message: `activitySpecificFields[${i}]: hearts must be a number`,
+              message: `activitySpecificFields[${i}]: diamonds must be a number`,
             });
           }
           
@@ -2901,13 +2909,13 @@ export const updateActivityType = async (req, res) => {
                     });
                   }
                 }
-                // Validate hearts: optional, can be null, undefined, or a number
-                if (option.hearts !== undefined && option.hearts !== null) {
-                  if (typeof option.hearts !== 'number' || isNaN(option.hearts)) {
+                // Validate diamonds: optional, can be null, undefined, or a number
+                if (option.diamonds !== undefined && option.diamonds !== null) {
+                  if (typeof option.diamonds !== 'number' || isNaN(option.diamonds)) {
                     await connection.rollback();
                     return res.status(400).json({
                       success: false,
-                      message: `activitySpecificFields[${i}]: options[${j}].hearts must be a number or null`,
+                      message: `activitySpecificFields[${i}]: options[${j}].diamonds must be a number or null`,
                     });
                   }
                 }

@@ -281,85 +281,7 @@ const buildMrDiceRollBalanceFilterCte = () => `
   )
 `;
 
-/**
- * Build dynamic query filter based on manager role and ID
- * @param {string} role - 'flm', 'slm', or 'tlm'
- * @param {string} managerId - The manager's ID
- * @returns {object} - Object with join clause, where clause, and params array
- */
-const buildManagerTeamFilter = (role, managerId) => {
-  const normalizedRole = role?.toLowerCase();
 
-  switch (normalizedRole) {
-    case 'flm':
-      // Direct MRs under this FLM
-      return {
-        join: '',
-        where: 'm.flmId = ?',
-        params: [managerId]
-      };
-
-    case 'slm':
-      // MRs under FLMs that report to this SLM
-      return {
-        join: 'JOIN flms f ON m.flmId = f.flmId',
-        where: 'f.slmId = ?',
-        params: [managerId]
-      };
-
-    case 'tlm':
-      // MRs under FLMs that report to SLMs that report to this TLM
-      return {
-        join: 'JOIN flms f ON m.flmId = f.flmId JOIN slms s ON f.slmId = s.slmId',
-        where: 's.tlmId = ?',
-        params: [managerId]
-      };
-
-    default:
-      // Default to FLM behavior for backward compatibility
-      return {
-        join: '',
-        where: 'm.flmId = ?',
-        params: [managerId]
-      };
-  }
-};
-
-/**
- * Validate that a manager exists for the given role and ID
- * @param {Object} connection - Database connection
- * @param {string} role - Manager role ('flm', 'slm', 'tlm')
- * @param {string} managerId - Manager ID
- * @returns {boolean} - True if manager exists
- */
-const validateManagerExists = async (connection, role, managerId) => {
-  const normalizedRole = role?.toLowerCase();
-  let table, idColumn;
-
-  switch (normalizedRole) {
-    case 'flm':
-      table = 'flms';
-      idColumn = 'flmId';
-      break;
-    case 'slm':
-      table = 'slms';
-      idColumn = 'slmId';
-      break;
-    case 'tlm':
-      table = 'tlms';
-      idColumn = 'tlmId';
-      break;
-    default:
-      return false;
-  }
-
-  const [rows] = await connection.execute(
-    `SELECT ${idColumn} FROM ${table} WHERE ${idColumn} = ? LIMIT 1`,
-    [managerId]
-  );
-
-  return rows.length > 0;
-};
 
 //to view the board
 export const getMyBoard = async (req, res) => {
@@ -408,7 +330,7 @@ export const getMyBoard = async (req, res) => {
       const placeholders = playerIds.map(() => "?").join(", ");
 
       const [playerRows] = await connection.execute(
-        `SELECT flmId, flmName, currentBalanceMoves, diamonds
+        `SELECT flmId, flmName, currentBalanceMoves, hearts
          FROM flms
          WHERE flmId IN (${placeholders})`,
         playerIds
@@ -452,7 +374,7 @@ export const getMyBoard = async (req, res) => {
             playerInfo.currentBalanceMoves !== undefined
               ? Number(playerInfo.currentBalanceMoves)
               : null,
-          diamonds: playerInfo.diamonds !== undefined ? Number(playerInfo.diamonds) : null,
+          hearts: playerInfo.hearts !== undefined ? Number(playerInfo.hearts) : null,
         };
       });
     }
@@ -2232,29 +2154,31 @@ export const getPendingUploadsForFlm = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { managerId } = req.params;
+    const { flmId } = req.params;
     const {
       date,
       startDate,
       endDate,
       today,
       type, // Optional: filter by type ('prescription', 'pob', 'camp')
-      role = 'flm', // Default to FLM for backward compatibility
     } = req.query;
 
-    if (!managerId) {
+    if (!flmId) {
       return res.status(400).json({
         success: false,
-        message: "Manager ID is required",
+        message: "FLM ID is required",
       });
     }
 
-    // Validate that the manager exists for the specified role
-    const managerExists = await validateManagerExists(connection, role, managerId);
-    if (!managerExists) {
+    const [flmRows] = await connection.execute(
+      "SELECT flmId FROM flms WHERE flmId = ? LIMIT 1",
+      [flmId]
+    );
+
+    if (flmRows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `${role.toUpperCase()} not found`,
+        message: "FLM not found",
       });
     }
 
@@ -2290,21 +2214,17 @@ export const getPendingUploadsForFlm = async (req, res) => {
       dateParams.push(type.trim());
     }
 
-    // Build dynamic team filter based on role
-    const teamFilter = buildManagerTeamFilter(role, managerId);
-
     const [pendingUploads] = await connection.execute(
       `SELECT 
           p.*,
           m.mrName
        FROM uploads p
        JOIN mrs m ON p.mrId = m.mrId
-       ${teamFilter.join}
-       WHERE ${teamFilter.where}
+       WHERE m.flmId = ?
           ${whereDateClause}
           ${typeFilterClause}
        ORDER BY p.updatedAt DESC, p.dateOfUpload DESC, p.timeOfUpload DESC`,
-      [...teamFilter.params, ...dateParams]
+      [flmId, ...dateParams]
     );
 
     // Flatten activitySpecificDetails to top level for frontend compatibility
@@ -2392,27 +2312,14 @@ export const getUploadForFlm = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { managerId, uploadId } = req.params;
-    const { role = 'flm' } = req.query;
+    const { flmId, uploadId } = req.params;
 
-    if (!managerId || !uploadId) {
+    if (!flmId || !uploadId) {
       return res.status(400).json({
         success: false,
-        message: "Manager ID and uploadId are required",
+        message: "flmId and uploadId are required",
       });
     }
-
-    // Validate that the manager exists for the specified role
-    const managerExists = await validateManagerExists(connection, role, managerId);
-    if (!managerExists) {
-      return res.status(404).json({
-        success: false,
-        message: `${role.toUpperCase()} not found`,
-      });
-    }
-
-    // Build dynamic team filter
-    const teamFilter = buildManagerTeamFilter(role, managerId);
 
     const [rows] = await connection.execute(
       `SELECT 
@@ -2435,18 +2342,18 @@ export const getUploadForFlm = async (req, res) => {
          (p.points) AS totalPoints
        FROM uploads p
        JOIN mrs m ON p.mrId = m.mrId
-       ${teamFilter.join}
+       JOIN flms f ON m.flmId = f.flmId
        LEFT JOIN brands b ON JSON_UNQUOTE(JSON_EXTRACT(p.activitySpecificDetails, '$.brandId')) = b.id
        LEFT JOIN camps c ON JSON_UNQUOTE(JSON_EXTRACT(p.activitySpecificDetails, '$.campId')) = c.id
-       WHERE p.id = ? AND ${teamFilter.where}
+       WHERE f.flmId = ? AND p.id = ?
        LIMIT 1`,
-      [uploadId, ...teamFilter.params]
+      [flmId, uploadId]
     );
 
     if (rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `Upload not found for this ${role.toUpperCase()}`,
+        message: "Upload not found for this FLM",
       });
     }
 
@@ -2561,8 +2468,8 @@ export const reviewUpload = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { managerId, uploadId } = req.params;
-    const { action, rejectionReason, role = 'flm' } = req.body;
+    const { flmId, uploadId } = req.params;
+    const { action, rejectionReason } = req.body;
 
     if (!["approve", "reject"].includes(action)) {
       return res.status(400).json({
@@ -2578,41 +2485,27 @@ export const reviewUpload = async (req, res) => {
       });
     }
 
-    // Validate that the manager exists for the specified role
-    const managerExists = await validateManagerExists(connection, role, managerId);
-    if (!managerExists) {
-      return res.status(404).json({
-        success: false,
-        message: `${role.toUpperCase()} not found`,
-      });
-    }
-
     await connection.beginTransaction();
 
-    // Build dynamic team filter to check if upload belongs to manager's team
-    const teamFilter = buildManagerTeamFilter(role, managerId);
-
     const [uploadRows] = await connection.execute(
-      `SELECT p.*, m.mrId, m.flmId
+      `SELECT p.*, m.mrId
        FROM uploads p
        JOIN mrs m ON p.mrId = m.mrId
-       ${teamFilter.join}
-       WHERE p.id = ? AND ${teamFilter.where}
+       WHERE p.id = ? AND m.flmId = ?
        LIMIT 1
        FOR UPDATE`,
-      [uploadId, ...teamFilter.params]
+      [uploadId, flmId]
     );
 
     if (uploadRows.length === 0) {
       await connection.rollback();
       return res.status(404).json({
         success: false,
-        message: `Upload not found for this ${role.toUpperCase()}`,
+        message: "Upload not found for this FLM",
       });
     }
 
     const upload = uploadRows[0];
-    const flmId = upload.flmId; // Get flmId from the MR that uploaded this
 
     // Parse activitySpecificDetails from upload
     let activityDetails = {};
@@ -2629,13 +2522,13 @@ export const reviewUpload = async (req, res) => {
     if (action === "approve") {
       // Only allow approving pending uploads
       // Pending uploads can be first-time uploads (if auto-approval is disabled) or resubmissions
-    if (upload.status !== "pending") {
-      await connection.rollback();
-      return res.status(400).json({
-        success: false,
+      if (upload.status !== "pending") {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
           message: "Only pending uploads can be approved",
-      });
-    }
+        });
+      }
       // Get IST datetime for reviewDate and updatedAt (always IST regardless of server timezone)
       const reviewDateIST = formatISTDateTimeForSQL();
       const updatedAtIST = formatISTDateTimeForSQL();
@@ -2643,14 +2536,12 @@ export const reviewUpload = async (req, res) => {
       await connection.execute(
         `UPDATE uploads
          SET status = 'approved',
-             reason = ?,
-             approverId = ?,
-             approverRole = ?,
+             reason = 'approved by manager',
              reviewDate = ?,
              isCalculated = 1,
              updatedAt = ?
          WHERE id = ?`,
-        [`approved by ${role.toUpperCase()}(${managerId})`, managerId, role, reviewDateIST, reviewDateIST, uploadId]
+        [reviewDateIST, reviewDateIST, uploadId]
       );
 
       const points = Number(upload.points) || 0;
@@ -2718,7 +2609,7 @@ export const reviewUpload = async (req, res) => {
         );
       }
 
-      // Award diamonds and/or dice rolls dynamically based on activity-specific details
+      // Award hearts and/or dice rolls dynamically based on activity-specific details
       // This logic maintains backward compatibility with hardcoded types:
       // - Prescription: has brandId + noRxns → uses noRxns as multiplier
       // - POB: has brandId + noOfUnits/allValue (no noRxns) → uses noOfUnits/allValue based on countType
@@ -2839,9 +2730,8 @@ export const reviewUpload = async (req, res) => {
         }
       }
 
-      // Award calculated diamonds for new activity types during manual approval
-      // (if they weren't already awarded during upload/auto-approval)
-      // This ensures consistency: points, dice rolls, and diamonds are all awarded during approval
+      // Check for calculated diamonds from new activity types (not prescription, pob, camp)
+      // These diamonds are calculated during upload and stored in activitySpecificDetails
       const isLegacyType = upload.type === 'prescription' || upload.type === 'pob' || upload.type === 'camp';
       if (!isLegacyType && activityDetails._calculatedDiamonds) {
         const calculatedDiamonds = Number(activityDetails._calculatedDiamonds) || 0;
@@ -2863,7 +2753,7 @@ export const reviewUpload = async (req, res) => {
           );
         }
       }
-
+//end
       await connection.commit();
 
     return res.status(200).json({
@@ -3084,10 +2974,8 @@ export const reviewUpload = async (req, res) => {
         }
         
         // Check for calculated diamonds from new activity types to subtract
-        // Only subtract if diamonds were actually awarded (upload was approved/isCalculated = 1)
-        // This ensures consistency: only subtract what was actually awarded
         const isLegacyType = upload.type === 'prescription' || upload.type === 'pob' || upload.type === 'camp';
-        if (!isLegacyType && activityDetails._calculatedDiamonds && upload.isCalculated === 1) {
+        if (!isLegacyType && activityDetails._calculatedDiamonds) {
           const calculatedDiamondsToSubtract = Number(activityDetails._calculatedDiamonds) || 0;
           if (calculatedDiamondsToSubtract > 0) {
             await connection.execute(
@@ -3113,13 +3001,11 @@ export const reviewUpload = async (req, res) => {
         `UPDATE uploads
          SET status = 'rejected',
              reason = ?,
-             approverId = ?,
-             approverRole = ?,
              reviewDate = ?,
              isCalculated = 0,
              updatedAt = ?
          WHERE id = ?`,
-        [rejectionReason, managerId, role, reviewDateIST, reviewDateIST, uploadId]
+        [rejectionReason, reviewDateIST, reviewDateIST, uploadId]
       );
 
       await connection.commit();
@@ -4829,8 +4715,6 @@ export const getMrPointsLeaderboard = async (req, res) => {
 
     let highlightMrIds = [];
     let highlightFlmId = null;
-    let highlightSlmId = null;
-    let highlightTlmId = null;
 
     if (userId) {
       if (normalizedUserRole === "flm") {
@@ -4838,29 +4722,6 @@ export const getMrPointsLeaderboard = async (req, res) => {
         const [mrRows] = await connection.execute(
           `SELECT mrId FROM mrs WHERE flmId = ?`,
           [highlightFlmId]
-        );
-        highlightMrIds = mrRows.map(row => row.mrId);
-      } else if (normalizedUserRole === "slm") {
-        highlightSlmId = userId.toString().trim();
-        // Get all MRs under FLMs that report to this SLM
-        const [mrRows] = await connection.execute(
-          `SELECT m.mrId
-           FROM mrs m
-           JOIN flms f ON m.flmId = f.flmId
-           WHERE f.slmId = ?`,
-          [highlightSlmId]
-        );
-        highlightMrIds = mrRows.map(row => row.mrId);
-      } else if (normalizedUserRole === "tlm") {
-        highlightTlmId = userId.toString().trim();
-        // Get all MRs under FLMs that report to SLMs that report to this TLM
-        const [mrRows] = await connection.execute(
-          `SELECT m.mrId
-           FROM mrs m
-           JOIN flms f ON m.flmId = f.flmId
-           JOIN slms s ON f.slmId = s.slmId
-           WHERE s.tlmId = ?`,
-          [highlightTlmId]
         );
         highlightMrIds = mrRows.map(row => row.mrId);
       } else if (normalizedUserRole === "mr") {
@@ -5019,11 +4880,8 @@ export const getMrPointsLeaderboard = async (req, res) => {
     if (highlightMrIds.length > 0 && data.length > 0) {
       const highlightedEntries = data.filter(entry => entry.isHighlighted);
       if (highlightedEntries.length > 0) {
-        if ((normalizedUserRole === "flm" && highlightFlmId) ||
-            (normalizedUserRole === "slm" && highlightSlmId) ||
-            (normalizedUserRole === "tlm" && highlightTlmId)) {
-          // For FLM, SLM, TLM: show the highest ranked (best) MR among their team
-          highlightedEntry = highlightedEntries.reduce((best, current) =>
+        if (normalizedUserRole === "flm" && highlightFlmId) {
+          highlightedEntry = highlightedEntries.reduce((best, current) => 
             current.rank < best.rank ? current : best
           );
         } else if (normalizedUserRole === "mr") {
@@ -5160,8 +5018,6 @@ export const getDiceRollBalanceLeaderboard = async (req, res) => {
     let highlightId = null;
     let highlightMrIds = [];
     let highlightFlmId = null;
-    let highlightSlmId = null;
-    let highlightTlmId = null;
 
     const resolveFlmIdFromMr = async mrId => {
       if (!mrId) return null;
@@ -5197,29 +5053,6 @@ export const getDiceRollBalanceLeaderboard = async (req, res) => {
           const [mrRows] = await connection.execute(
             `SELECT mrId FROM mrs WHERE flmId = ?`,
             [highlightFlmId]
-          );
-          highlightMrIds = mrRows.map(row => row.mrId);
-        } else if (normalizedUserRole === "slm") {
-          highlightSlmId = userId.toString().trim();
-          // Get all MRs under FLMs that report to this SLM
-          const [mrRows] = await connection.execute(
-            `SELECT m.mrId
-             FROM mrs m
-             JOIN flms f ON m.flmId = f.flmId
-             WHERE f.slmId = ?`,
-            [highlightSlmId]
-          );
-          highlightMrIds = mrRows.map(row => row.mrId);
-        } else if (normalizedUserRole === "tlm") {
-          highlightTlmId = userId.toString().trim();
-          // Get all MRs under FLMs that report to SLMs that report to this TLM
-          const [mrRows] = await connection.execute(
-            `SELECT m.mrId
-             FROM mrs m
-             JOIN flms f ON m.flmId = f.flmId
-             JOIN slms s ON f.slmId = s.slmId
-             WHERE s.tlmId = ?`,
-            [highlightTlmId]
           );
           highlightMrIds = mrRows.map(row => row.mrId);
         } else if (normalizedUserRole === "mr") {
@@ -5486,11 +5319,8 @@ export const getDiceRollBalanceLeaderboard = async (req, res) => {
       if (highlightMrIds.length > 0 && data.length > 0) {
         const highlightedEntries = data.filter(entry => entry.isHighlighted);
         if (highlightedEntries.length > 0) {
-          if ((normalizedUserRole === "flm" && highlightFlmId) ||
-              (normalizedUserRole === "slm" && highlightSlmId) ||
-              (normalizedUserRole === "tlm" && highlightTlmId)) {
-            // For FLM, SLM, TLM: show the highest ranked (best) MR among their team
-            highlightedEntry = highlightedEntries.reduce((best, current) =>
+          if (normalizedUserRole === "flm" && highlightFlmId) {
+            highlightedEntry = highlightedEntries.reduce((best, current) => 
               current.rank < best.rank ? current : best
             );
           } else if (normalizedUserRole === "mr") {
@@ -6232,8 +6062,6 @@ export const getPointsLeaderboard = async (req, res) => {
     let highlightId = null;
     let highlightMrIds = [];
     let highlightFlmId = null;
-    let highlightSlmId = null;
-    let highlightTlmId = null;
 
     if (userId) {
       if (normalizedDivision === "player") {
@@ -6242,29 +6070,6 @@ export const getPointsLeaderboard = async (req, res) => {
           const [mrRows] = await connection.execute(
             `SELECT mrId FROM mrs WHERE flmId = ?`,
             [highlightFlmId]
-          );
-          highlightMrIds = mrRows.map(row => row.mrId);
-        } else if (normalizedUserRole === "slm") {
-          highlightSlmId = userId.toString().trim();
-          // Get all MRs under FLMs that report to this SLM
-          const [mrRows] = await connection.execute(
-            `SELECT m.mrId
-             FROM mrs m
-             JOIN flms f ON m.flmId = f.flmId
-             WHERE f.slmId = ?`,
-            [highlightSlmId]
-          );
-          highlightMrIds = mrRows.map(row => row.mrId);
-        } else if (normalizedUserRole === "tlm") {
-          highlightTlmId = userId.toString().trim();
-          // Get all MRs under FLMs that report to SLMs that report to this TLM
-          const [mrRows] = await connection.execute(
-            `SELECT m.mrId
-             FROM mrs m
-             JOIN flms f ON m.flmId = f.flmId
-             JOIN slms s ON f.slmId = s.slmId
-             WHERE s.tlmId = ?`,
-            [highlightTlmId]
           );
           highlightMrIds = mrRows.map(row => row.mrId);
         } else if (normalizedUserRole === "mr") {
@@ -6605,11 +6410,8 @@ export const getPointsLeaderboard = async (req, res) => {
       if (highlightMrIds.length > 0 && data.length > 0) {
         const highlightedEntries = data.filter(entry => entry.isHighlighted);
         if (highlightedEntries.length > 0) {
-          if ((normalizedUserRole === "flm" && highlightFlmId) ||
-              (normalizedUserRole === "slm" && highlightSlmId) ||
-              (normalizedUserRole === "tlm" && highlightTlmId)) {
-            // For FLM, SLM, TLM: show the highest ranked (best) MR among their team
-            highlightedEntry = highlightedEntries.reduce((best, current) =>
+          if (normalizedUserRole === "flm" && highlightFlmId) {
+            highlightedEntry = highlightedEntries.reduce((best, current) => 
               current.rank < best.rank ? current : best
             );
           } else if (normalizedUserRole === "mr") {
@@ -6785,42 +6587,28 @@ export const downloadUploadImage = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { managerId, uploadId } = req.params;
-    const { role = 'flm' } = req.query;
+    const { flmId, uploadId } = req.params;
 
-    if (!managerId || !uploadId) {
+    if (!flmId || !uploadId) {
       return res.status(400).json({
         success: false,
-        message: "Manager ID and uploadId are required",
+        message: "flmId and uploadId are required",
       });
     }
-
-    // Validate that the manager exists for the specified role
-    const managerExists = await validateManagerExists(connection, role, managerId);
-    if (!managerExists) {
-      return res.status(404).json({
-        success: false,
-        message: `${role.toUpperCase()} not found`,
-      });
-    }
-
-    // Build dynamic team filter
-    const teamFilter = buildManagerTeamFilter(role, managerId);
 
     const [rows] = await connection.execute(
       `SELECT p.uploadImage, p.type
        FROM uploads p
        JOIN mrs m ON p.mrId = m.mrId
-       ${teamFilter.join}
-       WHERE p.id = ? AND ${teamFilter.where}
+       WHERE p.id = ? AND m.flmId = ?
        LIMIT 1`,
-      [uploadId, ...teamFilter.params]
+      [uploadId, flmId]
     );
 
     if (rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `Upload image not found for this ${role.toUpperCase()}`,
+        message: "Upload image not found for this FLM",
       });
     }
 
@@ -6882,42 +6670,28 @@ export const viewUploadImage = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { managerId, uploadId } = req.params;
-    const { role = 'flm' } = req.query;
+    const { flmId, uploadId } = req.params;
 
-    if (!managerId || !uploadId) {
+    if (!flmId || !uploadId) {
       return res.status(400).json({
         success: false,
-        message: "Manager ID and uploadId are required",
+        message: "flmId and uploadId are required",
       });
     }
-
-    // Validate that the manager exists for the specified role
-    const managerExists = await validateManagerExists(connection, role, managerId);
-    if (!managerExists) {
-      return res.status(404).json({
-        success: false,
-        message: `${role.toUpperCase()} not found`,
-      });
-    }
-
-    // Build dynamic team filter
-    const teamFilter = buildManagerTeamFilter(role, managerId);
 
     const [rows] = await connection.execute(
       `SELECT p.uploadImage, p.type
        FROM uploads p
        JOIN mrs m ON p.mrId = m.mrId
-       ${teamFilter.join}
-       WHERE p.id = ? AND ${teamFilter.where}
+       WHERE p.id = ? AND m.flmId = ?
        LIMIT 1`,
-      [uploadId, ...teamFilter.params]
+      [uploadId, flmId]
     );
 
     if (rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `Upload image not found for this ${role.toUpperCase()}`,
+        message: "Upload image not found for this FLM",
       });
     }
 
@@ -7075,7 +6849,7 @@ export const getUserStats = async (req, res) => {
     if (normalizedRole === "flm") {
       const [flmRows] = await connection.execute(
         `SELECT flmId, flmName, hq, zone, region, points, moves, currentBalanceMoves, kills, status,
-                diamonds, createdAt, updatedAt
+                hearts, createdAt, updatedAt
          FROM flms
          WHERE LOWER(TRIM(flmId)) = ?
          LIMIT 1`,
@@ -7126,7 +6900,7 @@ export const getUserStats = async (req, res) => {
           moves: flm.moves ?? 0,
           currentBalanceMoves: flm.currentBalanceMoves ?? 0,
           kills: flm.kills ?? 0,
-          diamonds: flm.diamonds ?? 0,
+          hearts: flm.hearts ?? 0,
           status: flm.status,
           createdAt: flm.createdAt,
           updatedAt: flm.updatedAt,
@@ -7246,87 +7020,41 @@ export const getMrsByFlm = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { managerId } = req.params;
-    const { role = 'flm' } = req.query;
+    const { flmId } = req.params;
 
-    if (!managerId) {
+    if (!flmId) {
       return res.status(400).json({
         success: false,
-        message: "Manager ID is required",
+        message: "flmId is required",
       });
     }
 
-    // Validate that the manager exists for the specified role
-    const managerExists = await validateManagerExists(connection, role, managerId);
-    if (!managerExists) {
+    const [flmRows] = await connection.execute(
+      "SELECT flmId, flmName, zone, region FROM flms WHERE flmId = ?",
+      [flmId]
+    );
+
+    if (flmRows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `${role.toUpperCase()} not found`,
+        message: "FLM not found",
       });
-    }
-
-    // Build dynamic team filter
-    const teamFilter = buildManagerTeamFilter(role, managerId);
-
-    // For FLM role, we need to add the SLM/TLM joins conditionally
-    let additionalJoins = '';
-    if (role === 'slm') {
-      additionalJoins = 'JOIN slms s ON f.slmId = s.slmId';
-    } else if (role === 'tlm') {
-      additionalJoins = 'JOIN slms s ON f.slmId = s.slmId JOIN tlms t ON s.tlmId = t.tlmId';
     }
 
     const [mrsRows] = await connection.execute(
-      `SELECT m.id, m.mrId, m.mrName, m.email, m.zone, m.region, m.status, m.hasAccess, m.fromDate, m.toDate, m.createdAt, m.updatedAt,
-              f.flmId, f.flmName, f.zone AS flmZone, f.region AS flmRegion
-       FROM mrs m
-       JOIN flms f ON m.flmId = f.flmId
-       ${additionalJoins}
-       WHERE ${teamFilter.where}
-       ORDER BY f.flmName ASC, m.mrName ASC`,
-      teamFilter.params
+      `SELECT id, mrId, mrName, email, zone, region, status, hasAccess, fromDate, toDate, createdAt, updatedAt
+       FROM mrs
+       WHERE flmId = ?
+       ORDER BY mrName ASC`,
+      [flmId]
     );
-
-    // Group MRs by FLM for better organization
-    const flmsMap = new Map();
-    mrsRows.forEach(mr => {
-      if (!flmsMap.has(mr.flmId)) {
-        flmsMap.set(mr.flmId, {
-          flmId: mr.flmId,
-          flmName: mr.flmName,
-          zone: mr.flmZone,
-          region: mr.flmRegion,
-          mrs: []
-        });
-      }
-      flmsMap.get(mr.flmId).mrs.push({
-        id: mr.id,
-        mrId: mr.mrId,
-        mrName: mr.mrName,
-        email: mr.email,
-        zone: mr.zone,
-        region: mr.region,
-        status: mr.status,
-        hasAccess: mr.hasAccess,
-        fromDate: mr.fromDate,
-        toDate: mr.toDate,
-        createdAt: mr.createdAt,
-        updatedAt: mr.updatedAt
-      });
-    });
-
-    const flms = Array.from(flmsMap.values());
 
     res.status(200).json({
       success: true,
       data: {
-        manager: {
-          id: managerId,
-          role: role.toUpperCase()
-        },
-        flms: flms,
-        totalMrs: mrsRows.length,
-        totalFlms: flms.length,
+        flm: flmRows[0],
+        mrs: mrsRows,
+        total: mrsRows.length,
       },
     });
   } catch (error) {
@@ -7346,42 +7074,26 @@ export const updateMrAccess = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { managerId, mrId } = req.params;
-    const { hasAccess, fromDate, toDate, role = 'flm' } = req.body;
+    const { flmId, mrId } = req.params;
+    const { hasAccess, fromDate, toDate } = req.body;
 
-    if (!managerId || !mrId) {
+    if (!flmId || !mrId) {
       return res.status(400).json({
         success: false,
-        message: "Manager ID and mrId are required",
+        message: "flmId and mrId are required",
       });
     }
 
-    // Validate that the manager exists for the specified role
-    const managerExists = await validateManagerExists(connection, role, managerId);
-    if (!managerExists) {
-      return res.status(404).json({
-        success: false,
-        message: `${role.toUpperCase()} not found`,
-      });
-    }
-
-    // Build dynamic team filter to validate MR belongs to manager's team
-    const teamFilter = buildManagerTeamFilter(role, managerId);
-
-    // Validate MR-manager relationship using dynamic filter
+    // Validate MR-FLM relationship
     const [mrs] = await connection.execute(
-      `SELECT m.id, m.mrId, m.mrName, m.flmId, f.flmName
-       FROM mrs m
-       JOIN flms f ON m.flmId = f.flmId
-       ${teamFilter.join}
-       WHERE m.mrId = ? AND ${teamFilter.where}`,
-      [mrId, ...teamFilter.params]
+      `SELECT id, mrId, mrName, flmId FROM mrs WHERE mrId = ? AND flmId = ?`,
+      [mrId, flmId]
     );
 
     if (mrs.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `MR not found for this ${role.toUpperCase()}`,
+        message: "MR not found for this FLM",
       });
     }
 

@@ -4,7 +4,7 @@ CREATE TABLE `config` (
   `lessMedianFactor` decimal(10,4) NOT NULL,
   `greaterMedianFactor` decimal(10,4) NOT NULL,
   `pointToDiceRollRatio` int DEFAULT NULL,
-  `diceRollsToHearts` int DEFAULT 5,
+  `diceRollsToDiamonds` int DEFAULT 5,
   `isAutoApprovalAllowed` tinyint(1) DEFAULT 1,
   `createdAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
