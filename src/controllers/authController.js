@@ -111,6 +111,7 @@ export const loginUser = async (req, res) => {
       },
       ...(currentBoard ? { currentBoard: currentBoard } : {}),
     });
+    
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ message: "Internal Server Error", error: error.message });
