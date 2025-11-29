@@ -5782,8 +5782,9 @@ export const getHomeLeaderboard = async (req, res) => {
             COALESCE(f.flmName, 'Unassigned') AS managerName,
             COALESCE(f.teamName, NULL) AS teamName,
             COALESCE(MAX(m.zone), NULL) AS zone,
-            COUNT(p.id) AS totalHomePawns,
-            1 AS teamMembers
+                COUNT(DISTINCT p.id) AS totalHomePawns,
+    COUNT(DISTINCT m.mrId) AS teamMembers
+
           FROM flms f
           LEFT JOIN pawns p ON p.playerId = f.flmId 
             AND p.type = 'center' 

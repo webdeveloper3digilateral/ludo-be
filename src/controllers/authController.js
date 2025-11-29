@@ -100,11 +100,18 @@ export const loginUser = async (req, res) => {
       token,
       user: {
         id: userId,
-        name: foundUser.name || foundUser.tlmName || foundUser.slmName || foundUser.flmName || foundUser.mrName,
+        name:
+          foundUser.adminName ||
+          foundUser.tlmName ||
+          foundUser.slmName ||
+          foundUser.flmName ||
+          foundUser.mrName,
         role: userRole,
+        ...(userRole === "Admin" && { businessUnit: foundUser.businessUnit }),
       },
       ...(currentBoard ? { currentBoard: currentBoard } : {}),
     });
+    
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ message: "Internal Server Error", error: error.message });
