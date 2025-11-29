@@ -26,7 +26,7 @@ import {
   givePoints,
   startManualGame,
   giveDiceRollsToPlayers,
-  giveDiceRollsToRole
+  giveDiceRollsToRole,
   // applyMedianMoveAdjustment,
 } from "../controllers/adminController.js";
 

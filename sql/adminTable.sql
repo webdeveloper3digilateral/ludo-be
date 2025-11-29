@@ -5,6 +5,7 @@ CREATE TABLE `admins` (
   `password` varchar(255) NOT NULL,
   `gender` varchar(255) DEFAULT NULL,
   `phone` varchar(12) DEFAULT NULL,
+  `businessUnit` varchar(100) DEFAULT NULL,
   `status` varchar(255) DEFAULT 'Active',
   `createdAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updatedAt` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
